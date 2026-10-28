@@ -1,0 +1,22 @@
+{
+  "name": "tridtsat-pervyi",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Тридцать первый — серия 1",
+  "scripts": {
+    "preview": "npx serve . -l 5051",
+    "sfx": "node scripts/make-sfx.mjs",
+    "studio": "npm run sfx && remotion studio src/index.js",
+    "still": "remotion still src/index.js Lift-Ep1 out/frame.png --frame=60",
+    "sheet:a": "remotion still src/index.js StyleSheet out/sheet-a.png --frame=10",
+    "sheet:b": "remotion still src/index.js StyleSheet out/sheet-b.png --frame=60",
+    "render": "npm run sfx && remotion render src/index.js Lift-Ep1 out/lift-ep1.mp4"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "remotion": "^4.0.0",
+    "serve": "^14.2.4"
+  }
+}

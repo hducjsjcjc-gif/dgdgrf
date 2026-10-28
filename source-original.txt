@@ -1,0 +1,1823 @@
+
+Тридцать первый · Серия 1 — код, часть 1: движок
+
+Отдельный проект tridtsat-pervyi, не зависит от «Серии выживания». Части 1–3 вместе дают полный ролик: 90 с, 16 сцен (15 с голосом + титр), 200 слов, 1080×1920, 30 fps. Одно ядро на чистом JavaScript рисует кадр по его номеру: и HTML-превью в браузере, и Remotion для MP4.
+
+Во всём проекте нет CSS-анимаций, transition, setTimeout и Math.random: всё движение считается от номера кадра.
+
+Запуск
+
+Создайте папку tridtsat-pervyi и разложите файлы из частей 1–3 по путям.
+
+npm i remotion @remotion/cli react react-dom
+
+Превью: npm run preview, затем откройте http://localhost:5050/preview/. Пробел — play/pause, стрелки — кадр, Shift+стрелки — секунда, ?frame=N — нужный кадр.
+
+Remotion Studio: npm run studio.
+
+Видео: npm run render → out/lift-ep1.mp4.
+
+Стиль-лист: npm run sheet:a (Миша) и npm run sheet:b (элементы).
+
+Структура проекта
+
+tridtsat-pervyi/
+  package.json                 часть 1
+  preview/index.html           часть 1
+  preview/player.js            часть 1
+  src/index.js                 часть 1
+  src/Root.jsx                 часть 1
+  src/FrameView.jsx            часть 1
+  src/core/theme.js            часть 1
+  src/core/math.js             часть 1
+  src/core/html.js             часть 1
+  src/core/fonts.js            часть 1
+  src/core/timeline.js         часть 1
+  src/core/render.js           часть 1
+  src/core/ui.js               часть 1
+  src/core/subtitles.js        часть 1
+  src/core/world.js            часть 1
+  src/core/script.js           часть 2
+  src/core/hero.js             часть 2
+  src/core/props.js            часть 2
+  src/core/stylesheet.js       часть 2
+  src/core/scenes/index.js     часть 3
+  src/core/scenes/part-a.js    часть 3
+  src/core/scenes/part-b.js    часть 3
+  public/vo/ep1/               место под озвучку (по умолчанию выключено)
+
+package.json
+
+{
+  "name": "tridtsat-pervyi",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Тридцать первый — серия 1",
+  "scripts": {
+    "preview": "npx serve . -l 5050",
+    "studio": "remotion studio src/index.js",
+    "still": "remotion still src/index.js Lift-Ep1 out/frame.png --frame=60",
+    "sheet:a": "remotion still src/index.js StyleSheet out/sheet-a.png --frame=10",
+    "sheet:b": "remotion still src/index.js StyleSheet out/sheet-b.png --frame=60",
+    "render": "remotion render src/index.js Lift-Ep1 out/lift-ep1.mp4"
+  }
+}
+
+preview/index.html
+
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Тридцать первый — превью</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #0a0a0c; color: #ddd; font-family: system-ui, sans-serif; }
+    .app { display: flex; flex-direction: column; height: 100%; }
+    .viewport { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; padding: 12px; box-sizing: border-box; }
+    .frame-box { position: relative; overflow: hidden; box-shadow: 0 0 0 1px #222; }
+    #stage { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; transform-origin: 0 0; }
+    .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 10px 16px; background: #111; border-top: 1px solid #222; }
+    button, select { background: #1d1f27; color: #eee; border: 1px solid #333; border-radius: 8px; padding: 6px 12px; font-size: 14px; cursor: pointer; }
+    #scrub { flex: 1; min-width: 200px; }
+    .tc { font-family: ui-monospace, monospace; font-size: 13px; min-width: 240px; text-align: right; }
+    .issues { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="viewport" id="viewport">
+      <div class="frame-box" id="frameBox"><div id="stage"></div></div>
+    </div>
+    <div class="controls">
+      <button id="play">▶</button>
+      <button id="prev">−1</button>
+      <button id="next">+1</button>
+      <input type="range" id="scrub" min="0" value="0" step="1">
+      <span class="tc" id="tc"></span>
+      <select id="mode">
+        <option value="episode">Серия 1</option>
+        <option value="stylesheet">Стиль-лист</option>
+      </select>
+      <div class="issues" id="issues"></div>
+    </div>
+  </div>
+  <script type="module" src="/preview/player.js"></script>
+</body>
+</html>
+
+preview/player.js
+
+import {renderFrame, renderStyleSheet} from '/src/core/render.js';
+import {SLOTS, STYLE_FRAMES, TOTAL_FRAMES, slotIndexAt, validateScript} from '/src/core/timeline.js';
+import {FPS, H, W} from '/src/core/theme.js';
+import {loadFonts} from '/src/core/fonts.js';
+
+const $ = (id) => document.getElementById(id);
+const stage = $('stage');
+const box = $('frameBox');
+const viewport = $('viewport');
+const scrub = $('scrub');
+const tc = $('tc');
+const playBtn = $('play');
+const modeSel = $('mode');
+const issuesEl = $('issues');
+
+const params = new URLSearchParams(location.search);
+let mode = params.get('mode') === 'stylesheet' ? 'stylesheet' : 'episode';
+let frame = Number(params.get('frame')) || 0;
+let playing = false;
+let t0 = 0;
+let f0 = 0;
+let drawn = -1;
+
+const total = () => (mode === 'episode' ? TOTAL_FRAMES : STYLE_FRAMES);
+
+function fit() {
+  const s = Math.min(viewport.clientWidth / W, viewport.clientHeight / H);
+  box.style.width = `${Math.floor(W * s)}px`;
+  box.style.height = `${Math.floor(H * s)}px`;
+  stage.style.transform = `scale(${s})`;
+}
+
+function label() {
+  if (mode !== 'episode') return 'стиль-лист';
+  const {def} = SLOTS[slotIndexAt(frame)];
+  return def.kind === 'title' ? 'титр' : `сцена ${def.n}`;
+}
+
+function draw(force = false) {
+  frame = Math.max(0, Math.min(total() - 1, Math.round(frame)));
+  if (!force && frame === drawn) return;
+  drawn = frame;
+  stage.innerHTML = mode === 'episode' ? renderFrame(frame) : renderStyleSheet(frame);
+  scrub.max = String(total() - 1);
+  scrub.value = String(frame);
+  tc.textContent = `кадр ${frame} / ${total() - 1} · ${(frame / FPS).toFixed(2)} с · ${label()}`;
+}
+
+function pause() {
+  playing = false;
+  playBtn.textContent = '▶';
+}
+
+function tick(now) {
+  if (!playing) return;
+  const f = f0 + Math.floor(((now - t0) / 1000) * FPS);
+  if (f >= total() - 1) {
+    frame = total() - 1;
+    pause();
+    draw();
+    return;
+  }
+  frame = f;
+  draw();
+  requestAnimationFrame(tick);
+}
+
+function play() {
+  if (frame >= total() - 1) frame = 0;
+  playing = true;
+  t0 = performance.now();
+  f0 = frame;
+  playBtn.textContent = '❚❚';
+  requestAnimationFrame(tick);
+}
+
+function step(d) {
+  pause();
+  frame += d;
+  draw();
+}
+
+playBtn.addEventListener('click', () => (playing ? pause() : play()));
+$('prev').addEventListener('click', () => step(-1));
+$('next').addEventListener('click', () => step(1));
+scrub.addEventListener('input', () => {
+  pause();
+  frame = Number(scrub.value);
+  draw();
+});
+modeSel.addEventListener('change', () => {
+  pause();
+  mode = modeSel.value;
+  frame = 0;
+  draw(true);
+});
+window.addEventListener('resize', fit);
+window.addEventListener('keydown', (e) => {
+  if (e.target === modeSel || e.target === scrub) return;
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (playing) pause();
+    else play();
+  }
+  if (e.code === 'ArrowRight') step(e.shiftKey ? FPS : 1);
+  if (e.code === 'ArrowLeft') step(e.shiftKey ? -FPS : -1);
+});
+
+const issues = validateScript();
+issuesEl.textContent = issues.length ? `Проверка сценария: ${issues.join(' · ')}` : 'Проверка сценария: ок';
+issuesEl.style.color = issues.length ? '#FF3B3B' : '#3DDC84';
+
+modeSel.value = mode;
+fit();
+tc.textContent = 'загрузка шрифтов…';
+loadFonts().then(() => draw(true));
+
+src/index.js
+
+import {registerRoot} from 'remotion';
+import {RemotionRoot} from './Root.jsx';
+
+registerRoot(RemotionRoot);
+
+src/Root.jsx
+
+import React from 'react';
+import {Composition} from 'remotion';
+import {FrameView} from './FrameView.jsx';
+import {FPS, H, W} from './core/theme.js';
+import {STYLE_FRAMES, TOTAL_FRAMES} from './core/timeline.js';
+
+export const RemotionRoot = () => (
+  <>
+    <Composition
+      id="Lift-Ep1"
+      component={FrameView}
+      durationInFrames={TOTAL_FRAMES}
+      fps={FPS}
+      width={W}
+      height={H}
+      defaultProps={{mode: 'episode'}}
+    />
+    <Composition
+      id="StyleSheet"
+      component={FrameView}
+      durationInFrames={STYLE_FRAMES}
+      fps={FPS}
+      width={W}
+      height={H}
+      defaultProps={{mode: 'stylesheet'}}
+    />
+  </>
+);
+
+src/FrameView.jsx
+
+import React, {useEffect, useState} from 'react';
+import {AbsoluteFill, Audio, Sequence, continueRender, delayRender, staticFile, useCurrentFrame} from 'remotion';
+import {renderFrame, renderStyleSheet} from './core/render.js';
+import {loadFonts} from './core/fonts.js';
+import {H, W} from './core/theme.js';
+import {SLOTS, VOICE_PAD} from './core/timeline.js';
+
+// Озвучка: положите public/vo/ep1/s00.mp3, s02.mp3 … s15.mp3 и поставьте true.
+const USE_VOICE = false;
+
+export const FrameView = ({mode = 'episode'}) => {
+  const frame = useCurrentFrame();
+  const [handle] = useState(() => delayRender('Загрузка шрифтов'));
+
+  useEffect(() => {
+    loadFonts().then(() => continueRender(handle));
+  }, [handle]);
+
+  const html = mode === 'stylesheet' ? renderStyleSheet(frame) : renderFrame(frame);
+  return (
+    <AbsoluteFill style={{backgroundColor: '#000'}}>
+      <div style={{width: W, height: H}} dangerouslySetInnerHTML={{__html: html}} />
+      {USE_VOICE && mode === 'episode'
+        ? SLOTS.filter((s) => s.def.kind === 'scene').map((s) => (
+            <Sequence key={s.def.id} from={s.from + VOICE_PAD} durationInFrames={s.frames - VOICE_PAD}>
+              <Audio src={staticFile(`vo/ep1/${s.def.id}.mp3`)} />
+            </Sequence>
+          ))
+        : null}
+    </AbsoluteFill>
+  );
+};
+
+src/core/theme.js
+
+// Паспорт стиля «Тридцать первый»: кадр, палитра (цвет = смысл), шрифты.
+export const W = 1080;
+export const H = 1920;
+export const FPS = 30;
+
+export const C = {
+  white: '#FFFFFF',
+  grey: '#8D93A3',
+  red: '#FF3B3B',
+  green: '#3DDC84',
+  blue: '#3A8DFF',
+  cyan: '#4FB3F0',
+  gold: '#F5C518',
+  amber: '#FFB347',
+  flame: '#FFE08A',
+  navy: '#14172B',
+  wall: '#1A1F36',
+  metal: '#2E3346',
+  metalLt: '#4A5068',
+  metalDk: '#1E2232',
+  black: '#000000',
+};
+
+// Красный — опасность, зелёный — правильное действие, синий — информация, золото — важное.
+export const colorOf = (name) => C[name] || name || C.white;
+
+export const alpha = (hex, a) => {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+};
+
+export const glow = (hex, k = 1) =>
+  `0 0 ${Math.round(14 * k)}px ${alpha(hex, 0.67)}, 0 0 ${Math.round(36 * k)}px ${alpha(hex, 0.4)}`;
+
+export const FONT_HEAVY = 'Montserrat, Arial Black, sans-serif';
+export const FONT_MONO = 'JetBrains Mono, Courier New, monospace';
+export const FONT_CSS_URL =
+  'https://fonts.googleapis.com/css2?family=Montserrat:wght@500;700;800;900&family=JetBrains+Mono:wght@400;700&display=block';
+export const FONT_PROBES = [
+  '500 40px Montserrat',
+  '700 40px Montserrat',
+  '800 40px Montserrat',
+  '900 40px Montserrat',
+  '400 40px "JetBrains Mono"',
+  '700 40px "JetBrains Mono"',
+];
+export const FONT_PROBE_TEXT = 'ЭПИЗОД Шаг ёЁ йЙ abc 0123 ≈→↑';
+
+src/core/math.js
+
+// Детерминированная математика анимации: одинаковый кадр = одинаковая картинка.
+export const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+export const mix = (a, b, t) => a + (b - a) * t;
+
+export const Easing = {
+  linear: (t) => t,
+  inQuad: (t) => t * t,
+  outQuad: (t) => 1 - (1 - t) * (1 - t),
+  inOutQuad: (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2),
+  outCubic: (t) => 1 - Math.pow(1 - t, 3),
+  inOutCubic: (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2),
+  outExpo: (t) => (t >= 1 ? 1 : 1 - Math.pow(2, -10 * t)),
+};
+
+// Аналог interpolate из Remotion.
+export function interpolate(x, input, output, opts = {}) {
+  if (input.length !== output.length || input.length < 2) {
+    throw new Error('interpolate: диапазоны должны быть одной длины, минимум 2 точки');
+  }
+  const easing = opts.easing || Easing.linear;
+  let i = 1;
+  while (i < input.length - 1 && x > input[i]) i += 1;
+  const x0 = input[i - 1];
+  const x1 = input[i];
+  let t = x1 === x0 ? 1 : (x - x0) / (x1 - x0);
+  if (opts.extend !== true) t = clamp(t, 0, 1);
+  return mix(output[i - 1], output[i], easing(t));
+}
+
+// Пружина как в Remotion: считается от номера кадра, без состояния.
+export function spring(frame, {damping = 10, stiffness = 100, mass = 1, fps = 30, from = 0, to = 1} = {}) {
+  if (frame <= 0) return from;
+  const steps = Math.ceil(frame) * 4;
+  const dt = frame / fps / steps;
+  let x = from;
+  let v = 0;
+  for (let i = 0; i < steps; i += 1) {
+    const a = (-stiffness * (x - to) - damping * v) / mass;
+    v += a * dt;
+    x += v * dt;
+  }
+  return x;
+}
+
+function hash(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i += 1) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+// «Случайное» число 0…1 по сиду, вместо запрещённого Math.random.
+export function random(seed) {
+  let t = (hash(String(seed)) + 0x6d2b79f5) | 0;
+  t = Math.imul(t ^ (t >>> 15), t | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+
+src/core/html.js
+
+// Утилиты сборки HTML/SVG-строк. Атрибуты везде в одинарных кавычках.
+const Q = String.fromCharCode(34);
+const A = String.fromCharCode(39);
+const ESC = {'&': '&amp;', '<': '&lt;', '>': '&gt;', [Q]: '&quot;', [A]: '&#39;'};
+const ESC_RE = new RegExp('[&<>' + Q + A + ']', 'g');
+
+export const esc = (s) => String(s ?? '').replace(ESC_RE, (ch) => ESC[ch]);
+
+const round = (v, k) => {
+  const r = Math.round(v * k) / k;
+  return r === 0 ? 0 : r;
+};
+export const f2 = (v) => String(round(v, 100));
+export const f3 = (v) => String(round(v, 1000));
+
+src/core/fonts.js
+
+import {FONT_CSS_URL, FONT_PROBES, FONT_PROBE_TEXT} from './theme.js';
+
+let pending = null;
+
+// Подключает Google Fonts и ждёт загрузки кириллицы всех нужных начертаний.
+export function loadFonts() {
+  if (pending) return pending;
+  pending = new Promise((resolve) => {
+    if (typeof document === 'undefined') {
+      resolve(false);
+      return;
+    }
+    const waitFaces = () =>
+      Promise.all(FONT_PROBES.map((f) => document.fonts.load(f, FONT_PROBE_TEXT)))
+        .then(() => document.fonts.ready)
+        .then(() => resolve(true))
+        .catch(() => resolve(false));
+    if (document.querySelector('link[data-episode-fonts]')) {
+      waitFaces();
+      return;
+    }
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = FONT_CSS_URL;
+    link.setAttribute('data-episode-fonts', '1');
+    link.onload = waitFaces;
+    link.onerror = () => {
+      console.warn('Шрифты Google Fonts не загрузились: проверьте интернет');
+      resolve(false);
+    };
+    document.head.appendChild(link);
+  });
+  return pending;
+}
+
+src/core/timeline.js
+
+// Таймлайн серии: слоты сцен, мягкие склейки, расчётный тайминг слов, проверка сценария.
+import {EPISODE, SCENES} from './script.js';
+import {FPS} from './theme.js';
+import {clamp, Easing} from './math.js';
+
+export const XFADE = 10; // мягкая склейка сцен: 0,33 с
+export const TITLE_FADE = 12; // вход и выход чёрного титра: 0,4 с
+export const VOICE_PAD = 9; // реплика: через 0,3 с после начала сцены, до 0,3 с до конца
+export const STYLE_FRAMES = 90;
+
+export const SLOTS = [];
+let cursor = 0;
+SCENES.forEach((def, index) => {
+  const frames = Math.round(def.dur * FPS);
+  SLOTS.push({def, index, from: cursor, frames});
+  cursor += frames;
+});
+export const TOTAL_FRAMES = cursor; // 2700 кадров = 90 с
+
+export function slotIndexAt(frame) {
+  const f = clamp(Math.floor(frame), 0, TOTAL_FRAMES - 1);
+  let found = 0;
+  for (let i = 0; i < SLOTS.length; i += 1) {
+    if (f >= SLOTS[i].from) found = i;
+  }
+  return found;
+}
+
+const fadeBetween = (a, b) => (a.def.kind === 'title' || b.def.kind === 'title' ? TITLE_FADE : XFADE);
+
+// Слои кадра снизу вверх. На склейке новая сцена проявляется поверх предыдущей.
+export function layersAt(frame) {
+  const f = clamp(Math.floor(frame), 0, TOTAL_FRAMES - 1);
+  const i = slotIndexAt(f);
+  const cur = SLOTS[i];
+  const local = f - cur.from;
+  if (i > 0) {
+    const prev = SLOTS[i - 1];
+    const n = fadeBetween(prev, cur);
+    if (local < n) {
+      return [
+        {slot: prev, local: f - prev.from, opacity: 1},
+        {slot: cur, local, opacity: Easing.inOutQuad((local + 1) / (n + 1))},
+      ];
+    }
+  }
+  return [{slot: cur, local, opacity: 1}];
+}
+
+const HAS_LETTER = /[0-9A-Za-zА-Яа-яЁё]/;
+const VOWELS = /[аеёиоуыэюяaeiouy]/g;
+
+// Слова реплики. Тире и одиночные знаки приклеиваются к предыдущему слову и дают паузу.
+export function tokenize(voice = '') {
+  const words = [];
+  voice
+    .split(' ')
+    .filter(Boolean)
+    .forEach((raw) => {
+      if (!HAS_LETTER.test(raw)) {
+        const last = words[words.length - 1];
+        if (last) {
+          last.text += ` ${raw}`;
+          last.pause += 1;
+        }
+        return;
+      }
+      const clean = raw.toLowerCase().replace(/[^0-9a-zа-яё]/g, '');
+      const syl = Math.max(1, (clean.match(VOWELS) || []).length);
+      const pause = /[.!?…]$/.test(raw) ? 1.2 : /[,:;]$/.test(raw) ? 0.6 : 0;
+      words.push({text: raw, clean, syl, pause});
+    });
+  return words;
+}
+
+export const wordCount = (voice = '') => tokenize(voice).length;
+
+// Расчётный тайминг слов, пока нет озвучки: длина слова по слогам плюс паузы на знаках.
+export function wordTimings(def, frames) {
+  const words = tokenize(def.voice);
+  if (!words.length) return [];
+  const a = VOICE_PAD;
+  const b = frames - VOICE_PAD;
+  const units = words.reduce((s, w, i) => s + w.syl + 0.5 + (i < words.length - 1 ? w.pause : 0), 0);
+  const k = (b - a) / units;
+  let t = a;
+  return words.map((w, i) => {
+    const start = t;
+    t += (w.syl + 0.5) * k;
+    const end = t;
+    if (i < words.length - 1) t += w.pause * k;
+    return {...w, start, end};
+  });
+}
+
+// Проверка: длина 90 с, сцены 4–7 с, темп 2,4–2,7 слова/с, всего 200 слов.
+export function validateScript() {
+  const issues = [];
+  const totalSec = TOTAL_FRAMES / FPS;
+  if (Math.abs(totalSec - EPISODE.targetSeconds) > 0.01) issues.push(`длина ${totalSec} с вместо ${EPISODE.targetSeconds} с`);
+  let words = 0;
+  SLOTS.forEach(({def}) => {
+    if (def.kind !== 'scene') return;
+    const n = wordCount(def.voice);
+    words += n;
+    const rate = n / (def.dur - (2 * VOICE_PAD) / FPS);
+    if (def.dur < EPISODE.minScene || def.dur > EPISODE.maxScene) issues.push(`${def.id}: ${def.dur} с вне ${EPISODE.minScene}–${EPISODE.maxScene} с`);
+    if (rate < EPISODE.minRate - 1e-6 || rate > EPISODE.maxRate + 1e-6) issues.push(`${def.id}: темп ${rate.toFixed(2)} сл/с`);
+  });
+  if (words !== EPISODE.targetWords) issues.push(`слов ${words} вместо ${EPISODE.targetWords}`);
+  return issues;
+}
+
+src/core/render.js
+
+// Сборка кадра: сцена под камерой → затемнение, пыль, виньетка → интерфейс → шапка → субтитры.
+import {H, W} from './theme.js';
+import {layersAt, validateScript} from './timeline.js';
+import {SCENE_RENDERERS} from './scenes/index.js';
+import {clockPlate, header, stepBar, titleCard} from './ui.js';
+import {subtitles} from './subtitles.js';
+import {cameraTransform, dust, shade, vignette} from './world.js';
+import {styleSheet} from './stylesheet.js';
+import {esc, f3} from './html.js';
+
+validateScript().forEach((msg) => console.warn('[сценарий]', msg));
+
+const FULL = `position:absolute;left:0;top:0;width:${W}px;height:${H}px`;
+
+function fallback(def) {
+  return {svg: `<rect x='0' y='0' width='${W}' height='${H}' fill='#14172B'/><text x='540' y='960' text-anchor='middle' fill='#8D93A3' font-size='48'>${esc(def.id)}: сцены нет</text>`};
+}
+
+function sceneHTML(slot, local, global) {
+  const {def, frames} = slot;
+  if (def.kind === 'title') return titleCard(def, local, frames);
+  const render = SCENE_RENDERERS[def.id];
+  const out = (render ? render({def, local, frames, t: local / frames, uid: def.id}) : fallback(def)) || {};
+  const impacts = [...(def.impacts || []), ...(out.impacts || [])];
+  const stepN = def.step ? def.title.replace('ШАГ ', '') : '';
+  return `<div style='${FULL};background:#000;overflow:hidden'>
+<div style='${FULL};transform:${cameraTransform(impacts, local, frames)};transform-origin:50% 50%'>
+<svg width='${W}' height='${H}' viewBox='0 0 ${W} ${H}' style='position:absolute;left:0;top:0;overflow:visible'>${out.svg || ''}</svg>
+${out.cam || ''}
+</div>
+${shade()}
+${dust(global)}
+${vignette()}
+${out.ui || ''}
+${def.step ? stepBar(stepN, def.step, local) : ''}
+${clockPlate(def.clock)}
+${header(def, local)}
+${subtitles(def, local, frames)}
+</div>`;
+}
+
+export function renderFrame(frame) {
+  const layers = layersAt(frame)
+    .map(({slot, local, opacity}) => `<div style='${FULL};opacity:${f3(opacity)}'>${sceneHTML(slot, local, slot.from + local)}</div>`)
+    .join('');
+  return `<div style='position:relative;width:${W}px;height:${H}px;overflow:hidden;background:#000'>${layers}</div>`;
+}
+
+export function renderStyleSheet(frame = 0) {
+  return styleSheet(frame);
+}
+
+src/core/ui.js
+
+// Интерфейс по паспорту стиля: шапка, плашка-часы, HUD, выноски, шаг, баннер, телефон, часы, титр.
+import {C, FONT_HEAVY, FONT_MONO, alpha, colorOf, glow} from './theme.js';
+import {Easing, clamp, interpolate, spring} from './math.js';
+import {esc, f2, f3} from './html.js';
+
+export const POP = {damping: 14, stiffness: 170};
+export const pop = (local, delay = 0) => (local == null ? 1 : spring(local - delay, POP));
+export const ease = (local, start, dur, easing = Easing.outCubic) =>
+  local == null ? 1 : interpolate(local, [start, start + dur], [0, 1], {easing});
+const at = (x, y) => `position:absolute;left:${f2(x)}px;top:${f2(y)}px`;
+
+export function icon(name, color, size = 44) {
+  const st = `fill='none' stroke='${color}' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'`;
+  const shapes = {
+    warn: `<path d='M22 5 L40 38 H4 Z' ${st}/><line x1='22' y1='17' x2='22' y2='27' ${st}/><circle cx='22' cy='32.5' r='2.4' fill='${color}'/>`,
+    target: `<circle cx='22' cy='22' r='15' ${st}/><circle cx='22' cy='22' r='5.5' fill='${color}'/>`,
+    check: `<path d='M8 23 L18 33 L37 12' ${st}/>`,
+    cross: `<path d='M10 10 L34 34 M34 10 L10 34' ${st}/>`,
+    info: `<circle cx='22' cy='22' r='16' ${st}/><line x1='22' y1='20' x2='22' y2='31' ${st}/><circle cx='22' cy='13.5' r='2.4' fill='${color}'/>`,
+    eyeoff: `<path d='M4 22 Q22 6 40 22 Q22 38 4 22 Z' ${st}/><circle cx='22' cy='22' r='5.5' fill='${color}'/><line x1='7' y1='38' x2='37' y2='6' ${st}/>`,
+    ear: `<path d='M15 31 Q8 16 20 9 Q34 4 36 18 Q37 27 29 30 Q24 32 24 37 Q23 42 17 40' ${st}/><path d='M20 22 Q20 15 26 15 Q31 17 28 24' ${st}/>`,
+    mute: `<path d='M6 17 H13 L23 8 V36 L13 27 H6 Z' ${st}/><path d='M29 16 L39 28 M39 16 L29 28' ${st}/>`,
+  };
+  return `<svg width='${size}' height='${size}' viewBox='0 0 44 44' style='flex-shrink:0;display:block'>${shapes[name] || ''}</svg>`;
+}
+
+export function dots(active, n = 8) {
+  const w = 520;
+  const step = 480 / (n - 1);
+  let c = '';
+  for (let i = 0; i < n; i += 1) {
+    const on = i === active;
+    c += `<circle cx='${f2(20 + i * step)}' cy='15' r='${on ? 11 : 5}' fill='${on ? C.white : C.grey}'/>`;
+  }
+  return `<svg width='${w}' height='30' viewBox='0 0 ${w} 30' style='display:block;margin:18px auto 0'><line x1='10' y1='15' x2='${w - 10}' y2='15' stroke='#5A5F6E' stroke-width='2'/>${c}</svg>`;
+}
+
+export function clockPlate(text, color = C.gold) {
+  if (!text) return '';
+  return `<div style='position:absolute;left:0;right:0;top:64px;display:flex;justify-content:center'><div style='font-family:${FONT_MONO};font-weight:700;font-size:34px;letter-spacing:3px;color:${color};padding:6px 24px;border-radius:10px;border:2px solid ${alpha(color, 0.35)};background:rgba(18,16,8,0.75);text-shadow:0 0 10px ${alpha(color, 0.4)}'>${esc(text)}</div></div>`;
+}
+
+export function header(def, local) {
+  if (!def.title) return '';
+  const a = ease(local, 3, 12);
+  const col = colorOf(def.color);
+  const size = def.title.length > 11 ? 76 : 92;
+  return `<div style='position:absolute;left:0;right:0;top:140px;text-align:center;font-family:${FONT_HEAVY}'>
+<div style='font-weight:900;font-size:124px;line-height:1;letter-spacing:-2px;color:#F4F4F6;text-shadow:0 6px 24px rgba(0,0,0,0.6)'>${esc(def.time)}</div>
+${dots(def.dot ?? 0)}
+<div style='font-weight:500;font-size:30px;color:${C.grey};margin-top:10px;letter-spacing:1px'>${esc(def.caption)}</div>
+<div style='font-weight:900;font-size:${size}px;line-height:1.05;color:${col};text-shadow:${glow(col, 0.8)};margin-top:16px;white-space:nowrap;opacity:${f3(a)};transform:translateY(${f2((1 - a) * 24)}px)'>${esc(def.title)}</div>
+<div style='font-weight:700;font-size:40px;color:#E8E8EC;margin-top:6px;opacity:${f3(a)}'>${esc(def.sub)}</div>
+</div>`;
+}
+
+export function hud({x, y, color = 'blue', icon: ic = 'info', title, sub = '', local = null, delay = 8}) {
+  const col = colorOf(color);
+  const a = pop(local, delay);
+  return `<div style='${at(x, y)};display:flex;align-items:center;gap:20px;padding:20px 30px 18px 24px;border-radius:20px;border:4px solid ${col};background:rgba(9,11,20,0.88);box-shadow:0 0 26px ${alpha(col, 0.4)}, inset 0 0 22px ${alpha(col, 0.13)};opacity:${f3(clamp(a * 1.4))};transform:scale(${f3(0.9 + 0.1 * a)});transform-origin:left center'>${icon(ic, col)}<div><div style='font-family:${FONT_HEAVY};font-weight:800;font-size:42px;line-height:1.05;color:#F2F2F5;text-transform:uppercase;white-space:nowrap'>${esc(title)}</div>${sub ? `<div style='font-family:${FONT_MONO};font-size:24px;letter-spacing:2px;margin-top:6px;color:${col};text-transform:uppercase;white-space:nowrap'>${esc(sub)}</div>` : ''}</div></div>`;
+}
+
+export function callout({x, y, w, label, text, tailX, local = null, delay = 10, color = 'gold'}) {
+  const col = colorOf(color);
+  const a = clamp(pop(local, delay), 0, 1.15);
+  return `<div style='${at(x, y)};width:${w}px;opacity:${f3(clamp(a * 1.4))};transform:translateY(${f2((1 - a) * 24)}px)'>
+<div style='border:4px solid ${col};border-radius:22px;background:#0A0C15;padding:16px 28px 20px;box-shadow:0 0 22px ${alpha(col, 0.27)}'>
+<div style='font-family:${FONT_MONO};font-weight:700;font-size:24px;letter-spacing:2px;color:${col}'>${esc(label)}</div>
+<div style='font-family:${FONT_HEAVY};font-weight:800;font-size:44px;line-height:1.1;color:#FFFFFF;margin-top:6px'>${esc(text)}</div>
+</div>
+<svg width='44' height='32' viewBox='0 0 44 32' style='position:absolute;left:${tailX - 22}px;top:100%;margin-top:-6px'><path d='M3 2 L41 2 L22 28 Z' fill='#0A0C15' stroke='${col}' stroke-width='4' stroke-linejoin='round'/><rect x='6' y='-2' width='32' height='7' fill='#0A0C15'/></svg>
+</div>`;
+}
+
+export function stepBar(n, text, local, y = 1296) {
+  const a = pop(local, 10);
+  return `<div style='position:absolute;left:50px;right:50px;top:${y}px;height:118px;display:flex;align-items:center;gap:36px;padding:0 44px;box-sizing:border-box;border-radius:26px;border:4px solid ${C.green};background:rgba(12,40,26,0.85);box-shadow:0 0 26px ${alpha(C.green, 0.27)};opacity:${f3(clamp(a * 1.4))};transform:translateX(${f2((1 - a) * -60)}px)'><div style='font-family:${FONT_HEAVY};font-weight:900;font-size:76px;color:${C.green};text-shadow:${glow(C.green, 0.6)}'>${esc(n)}</div><div style='font-family:${FONT_HEAVY};font-weight:800;font-size:48px;color:#E9ECEF;text-transform:uppercase;white-space:nowrap'>${esc(text)}</div></div>`;
+}
+
+export function slantBanner({title, sub = '', local = null, delay = 0, y = 600}) {
+  const a = local == null ? 1 : spring(local - delay, {damping: 11, stiffness: 170});
+  return `<div style='position:absolute;left:80px;right:80px;top:${y}px;text-align:center;border-radius:34px;padding:30px 30px 28px;background:linear-gradient(160deg, #B3121B 0%, #7A0E14 100%);border:4px solid #FF4A4A;box-shadow:0 0 70px rgba(255,40,40,0.65), 0 0 140px rgba(255,40,40,0.35);opacity:${f3(clamp(a * 2))};transform:translateY(${f2((1 - a) * -420)}px) rotate(-6deg)'><div style='display:flex;justify-content:center'>${icon('warn', '#FFD0D0', 84)}</div><div style='font-family:${FONT_HEAVY};font-weight:900;font-size:76px;line-height:1;color:#FFFFFF;margin-top:10px;text-transform:uppercase'>${esc(title)}</div>${sub ? `<div style='font-family:${FONT_MONO};font-weight:700;font-size:28px;letter-spacing:3px;color:#FFC2C2;margin-top:14px;text-transform:uppercase'>${esc(sub)}</div>` : ''}</div>`;
+}
+
+export function phone({x, y, w, h, tilt = 0, screen = '', glowColor = null}) {
+  const shadow = glowColor ? `0 0 60px ${alpha(glowColor, 0.5)}, 0 30px 60px rgba(0,0,0,0.6)` : '0 30px 60px rgba(0,0,0,0.6)';
+  return `<div style='${at(x, y)};width:${w}px;height:${h}px;transform:rotate(${tilt}deg);border-radius:64px;background:#1B1D2A;padding:20px;box-sizing:border-box;box-shadow:${shadow}'><div style='position:relative;width:100%;height:100%;border-radius:46px;background:#0E1525;overflow:hidden'><div style='position:absolute;top:16px;left:50%;width:130px;height:30px;margin-left:-65px;border-radius:15px;background:#05060A'></div>${screen}</div></div>`;
+}
+
+export function bigClock({x, y, w, text, color = 'gold', label = '', local = null, delay = 0, size = 130}) {
+  const col = colorOf(color);
+  const a = pop(local, delay);
+  return `<div style='${at(x, y)};width:${w}px;box-sizing:border-box;text-align:center;padding:22px 20px 26px;border-radius:28px;border:4px solid ${alpha(col, 0.55)};background:rgba(18,16,8,0.82);box-shadow:0 0 30px ${alpha(col, 0.25)};opacity:${f3(clamp(a * 1.4))};transform:scale(${f3(0.9 + 0.1 * a)})'><div style='font-family:${FONT_MONO};font-weight:700;font-size:${size}px;line-height:1;color:${col};text-shadow:${glow(col, 0.9)}'>${esc(text)}</div>${label ? `<div style='font-family:${FONT_MONO};font-size:26px;letter-spacing:3px;color:${C.grey};margin-top:14px;text-transform:uppercase'>${esc(label)}</div>` : ''}</div>`;
+}
+
+export function titleCard(def, local, frames) {
+  const o = interpolate(local, [12, 24, frames - 24, frames - 12], [0, 1, 1, 0]);
+  const s = interpolate(local, [12, frames - 12], [0.97, 1.02]);
+  return `<div style='position:absolute;left:0;top:0;width:1080px;height:1920px;background:#000'><div style='position:absolute;left:0;right:0;top:800px;text-align:center;opacity:${f3(o)};transform:scale(${f3(s)})'><div style='font-family:${FONT_HEAVY};font-weight:900;font-size:132px;letter-spacing:4px;color:#FFFFFF'>${esc(def.text)}</div><div style='font-family:${FONT_MONO};font-size:34px;letter-spacing:3px;color:${C.grey};margin-top:18px;text-transform:uppercase'>${esc(def.line)}</div>${dots(def.dot ?? 0)}</div></div>`;
+}
+
+src/core/subtitles.js
+
+// Караоке-субтитры: показывается текущая фраза (1–2 строки). Несказанные слова серые,
+// сказанные белые, ключевые — цветом смысла со свечением.
+import {C, FONT_HEAVY, colorOf, glow} from './theme.js';
+import {Easing, clamp, interpolate, spring} from './math.js';
+import {wordTimings} from './timeline.js';
+import {esc, f2, f3} from './html.js';
+
+const SHADOW = '0 6px 0 rgba(0,0,0,0.55), 0 0 18px rgba(0,0,0,0.85)';
+const MAX = 38;
+const END = /[.!?…:][»"]?$/;
+const SOFT = /[,—]$/;
+
+// Фразы: конец предложения, длинная часть до запятой или тире, не больше 38 знаков
+// (последнее слово предложения может немного превысить, чтобы не оставлять его одно).
+function chunksOf(words) {
+  const out = [];
+  let cur = [];
+  let len = 0;
+  const flush = () => {
+    if (cur.length) out.push(cur);
+    cur = [];
+    len = 0;
+  };
+  words.forEach((w, i) => {
+    const add = w.text.length + (cur.length ? 1 : 0);
+    const ends = END.test(w.text);
+    if (cur.length && len + add > MAX && !(ends && len + add <= MAX + 10)) flush();
+    len += w.text.length + (cur.length ? 1 : 0);
+    cur.push(i);
+    if (ends || (SOFT.test(w.text) && len >= 18)) flush();
+  });
+  flush();
+  return out;
+}
+
+export function subtitles(def, local, frames) {
+  if (!def.voice) return '';
+  const words = wordTimings(def, frames);
+  if (!words.length) return '';
+  const first = words[0].start;
+  if (local < first - 4 || local > frames - 2) return '';
+  let cur = 0;
+  words.forEach((w, i) => {
+    if (local >= w.start) cur = i;
+  });
+  const chunks = chunksOf(words);
+  const ch = chunks.find((c) => c.includes(cur)) || chunks[0];
+  const isLast = ch === chunks[chunks.length - 1];
+  const fade = isLast ? interpolate(local, [frames - 7, frames - 2], [1, 0]) : 1;
+  const a = clamp(spring(local - words[ch[0]].start + 3, {damping: 14, stiffness: 200}), 0, 1.1);
+  const spans = ch.map((i) => {
+    const w = words[i];
+    const said = local >= w.start;
+    const key = def.keys ? def.keys[w.clean] : null;
+    const kc = key ? colorOf(key) : null;
+    const color = !said ? '#6E7486' : kc || C.white;
+    const k = said ? clamp((local - w.start) / 6) : 1;
+    const sc = said ? 1 + 0.12 * (1 - Easing.outCubic(k)) : 1;
+    const sh = said && kc ? `${glow(kc, 0.7)}, 0 6px 0 rgba(0,0,0,0.55)` : SHADOW;
+    return `<span style='display:inline-block;color:${color};text-shadow:${sh};transform:scale(${f3(sc)})'>${esc(w.text)}</span>`;
+  });
+  return `<div style='position:absolute;left:44px;right:44px;top:1452px;text-align:center;font-family:${FONT_HEAVY};font-weight:900;font-size:76px;line-height:1.1;text-transform:uppercase;opacity:${f3(fade * clamp(a * 1.3))};transform:translateY(${f2((1 - Math.min(1, a)) * 16)}px)'>${spans.join(' ')}</div>`;
+}
+
+src/core/world.js
+
+// Мир: камера, пыль, виньетка, затемнение под шапкой и субтитрами, звуковые круги, SVG-текст.
+import {C, FONT_HEAVY, FONT_MONO, H, W} from './theme.js';
+import {Easing, interpolate, random} from './math.js';
+import {esc, f2, f3} from './html.js';
+
+const FULL = `position:absolute;left:0;top:0;width:${W}px;height:${H}px`;
+
+// Наезд 1 → 1.08 за сцену, тряска только на ударах.
+export function cameraTransform(impacts, local, frames) {
+  const s = interpolate(local, [0, frames], [1, 1.08], {easing: Easing.inOutQuad});
+  let dx = 0;
+  let dy = 0;
+  impacts.forEach((t) => {
+    const k = local - t;
+    if (k >= 0 && k < 16) {
+      const a = 12 * (1 - k / 16);
+      dx += Math.sin(k * 2.7) * a;
+      dy += Math.cos(k * 3.3) * a * 0.7;
+    }
+  });
+  return `translate(${f2(dx)}px, ${f2(dy)}px) scale(${s.toFixed(5)})`;
+}
+
+export const bg = (fill) => `<rect x='-80' y='-80' width='${W + 160}' height='${H + 160}' fill='${fill}'/>`;
+
+export function svgText(x, y, text, o = {}) {
+  const {size = 28, color = C.grey, font = 'mono', weight = 400, anchor = 'start', opacity = 1, spacing = 2} = o;
+  return `<text x='${f2(x)}' y='${f2(y)}' font-family='${font === 'mono' ? FONT_MONO : FONT_HEAVY}' font-size='${size}' font-weight='${weight}' fill='${color}' text-anchor='${anchor}' letter-spacing='${spacing}' opacity='${f3(opacity)}'>${esc(text)}</text>`;
+}
+
+// Расходящиеся пунктирные круги звука. Круг i стартует со сдвигом, чтобы не появляться сразу большим.
+export function soundRings(cx, cy, local, o = {}) {
+  const {color = C.red, n = 3, period = 30, maxR = 360, minR = 20, width = 6, dash = '22 14', from = 0, opacity = 0.8} = o;
+  const t0 = local - from;
+  if (t0 < 0) return '';
+  let out = '';
+  for (let i = 0; i < n; i += 1) {
+    const off = (i * period) / n;
+    if (t0 < off) continue;
+    const ph = ((t0 - off) % period) / period;
+    out += `<circle cx='${f2(cx)}' cy='${f2(cy)}' r='${f2(minR + ph * (maxR - minR))}' fill='none' stroke='${color}' stroke-width='${width}' stroke-dasharray='${dash}' opacity='${f3((1 - ph) * opacity)}'/>`;
+  }
+  return out;
+}
+
+export function dust(global, n = 30) {
+  let c = '';
+  for (let i = 0; i < n; i += 1) {
+    const sp = 0.2 + random('ds' + i) * 0.6;
+    const y = (((random('dy' + i) * H - global * sp) % H) + H) % H;
+    const x = random('dx' + i) * W + Math.sin(global / 40 + i) * 8;
+    const o = 0.08 + 0.25 * (0.5 + 0.5 * Math.sin(global / 25 + i * 1.7));
+    c += `<circle cx='${f2(x)}' cy='${f2(y)}' r='${f2(1.2 + random('dr' + i) * 2.6)}' fill='#C9CEDD' opacity='${f3(o)}'/>`;
+  }
+  return `<svg width='${W}' height='${H}' style='position:absolute;left:0;top:0'>${c}</svg>`;
+}
+
+export const vignette = () =>
+  `<div style='${FULL};background:radial-gradient(ellipse at 50% 48%, rgba(0,0,0,0) 55%, rgba(0,0,0,0.7) 100%)'></div>`;
+
+export const shade = () =>
+  `<div style='${FULL};background:linear-gradient(to bottom, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.55) 20%, rgba(0,0,0,0) 31%, rgba(0,0,0,0) 72%, rgba(0,0,0,0.8) 84%, rgba(0,0,0,0.92) 100%)'></div>`;
+
+Тридцать первый · Серия 1 — код, часть 2: сценарий, Миша, кабина
+
+Часть 2 из 3. Сценарий серии (тайминги из вашей таблицы, текст диктора подогнан под темп 2,4–2,7 слова/с), персонаж Миша, реквизит (кабина, панель крупно, разрез башни, рюкзак, кроссовки, носки, рука) и стиль-лист для сверки.
+
+Внешность Миши задана палитрой M в начале hero.js: цвета меняются в одном месте.
+
+src/core/script.js
+
+// «Тридцать первый», серия 1 «Не жми «открыть»»: 15 сцен с голосом + титр, 90 с, 200 слов.
+// dur — секунды; dot — активная точка шкалы (0–7); color и keys — цвет по смыслу;
+// impacts — кадры удара внутри сцены (лёгкая тряска).
+export const EPISODE = {
+  number: 1,
+  series: 'Тридцать первый',
+  title: 'НЕ ЖМИ «ОТКРЫТЬ»',
+  hero: 'Миша, 24',
+  targetSeconds: 90,
+  targetWords: 200,
+  minScene: 4,
+  maxScene: 7,
+  minRate: 2.4,
+  maxRate: 2.7,
+};
+
+const clock = (extra = 'ЗАРЯД 31 %', floor = '31') => `ЛИФТ · ЭТАЖ ${floor} · ${extra}`;
+
+export const SCENES = [
+  {
+    id: 's00', n: 0, kind: 'scene', part: 'hook', dur: 4,
+    clock: clock(), time: '31 этаж', dot: 0, caption: 'офисная башня · лифт',
+    title: 'КРИК ЗА ДВЕРЬЮ', color: 'red', sub: 'не открывай',
+    voice: 'Если зомби-апокалипсис, а ты в лифте — не жми «открыть».',
+    keys: {зомбиапокалипсис: 'red', лифте: 'gold', не: 'red', жми: 'red', открыть: 'red'},
+  },
+  {
+    id: 'title', kind: 'title', part: 'hook', dur: 3, dot: 0,
+    text: 'ЭПИЗОД 1', line: 'НЕ ЖМИ «ОТКРЫТЬ»',
+  },
+  {
+    id: 's02', n: 2, kind: 'scene', part: 'mistakes', dur: 5,
+    clock: clock(), time: 'нельзя', dot: 1, caption: 'три ошибки',
+    title: 'ОШИБКА 1', color: 'red', sub: 'все этажи сразу',
+    voice: 'Ошибка первая — нажать все этажи. Двери откроются везде, и тебя услышат.',
+    keys: {ошибка: 'red', все: 'red', этажи: 'red', услышат: 'red'},
+  },
+  {
+    id: 's03', n: 3, kind: 'scene', part: 'mistakes', dur: 6,
+    clock: clock(), time: 'нельзя', dot: 1, caption: 'три ошибки',
+    title: 'ОШИБКА 2', color: 'red', sub: 'звать диспетчера',
+    voice: 'Ошибка вторая — звать диспетчера по кнопке. Он ответит сразу, но это уже не человек.',
+    keys: {ошибка: 'red', диспетчера: 'red', не: 'red', человек: 'red'},
+  },
+  {
+    id: 's04', n: 4, kind: 'scene', part: 'mistakes', dur: 6,
+    clock: clock(), time: 'нельзя', dot: 1, caption: 'три ошибки',
+    title: 'ОШИБКА 3', color: 'red', sub: 'ломать люк',
+    voice: 'Ошибка третья — ломать люк. Удар по металлу слышен на три этажа вверх и вниз.',
+    keys: {ошибка: 'red', люк: 'red', три: 'gold', этажа: 'gold'},
+    impacts: [30, 70, 110],
+  },
+  {
+    id: 's05', n: 5, kind: 'scene', part: 'facts', dur: 6,
+    clock: clock(), time: 'сейчас', dot: 2, caption: 'что происходит',
+    title: 'ОНИ НЕ ВИДЯТ', color: 'blue', sub: 'слышат голос и шаги',
+    voice: 'Они не видят. Они слышат голос и шаги. Свет и запах им безразличны.',
+    keys: {не: 'blue', видят: 'blue', голос: 'red', шаги: 'red', безразличны: 'blue'},
+  },
+  {
+    id: 's06', n: 6, kind: 'scene', part: 'facts', dur: 7,
+    clock: clock(), time: '2:00', dot: 2, caption: 'что происходит',
+    title: 'АВАРИЙНЫЙ СВЕТ', color: 'gold', sub: 'потом темнота',
+    voice: 'Аварийный свет живёт два часа. Потом кабина будет в полной темноте. А заряд телефона — тридцать один процент.',
+    keys: {два: 'gold', часа: 'gold', темноте: 'red', тридцать: 'gold', один: 'gold', процент: 'gold'},
+  },
+  {
+    id: 's07', n: 7, kind: 'scene', part: 'facts', dur: 7,
+    clock: clock(), time: '≈ 9 м³', dot: 3, caption: 'что происходит',
+    title: 'ВОЗДУХ ЕСТЬ', color: 'blue', sub: 'шахта дышит',
+    voice: 'Воздуха в кабине девять кубометров, но шахта дышит, как труба. Задохнуться тебе не дадут. Найдут раньше.',
+    keys: {девять: 'blue', кубометров: 'blue', труба: 'blue', найдут: 'red', раньше: 'red'},
+  },
+  {
+    id: 's08', n: 8, kind: 'scene', part: 'facts', dur: 6,
+    clock: clock(), time: '«Миша»', dot: 3, caption: 'что происходит',
+    title: 'ЭТО ЗАПИСЬ', color: 'red', sub: 'имя он не называл',
+    voice: 'Но Миша своё имя никому не называл. Голос в кнопке — это всего лишь запись.',
+    keys: {миша: 'gold', имя: 'gold', запись: 'red'},
+  },
+  {
+    id: 's09', n: 9, kind: 'scene', part: 'steps', dur: 7,
+    clock: clock(), time: '31 %', dot: 4, caption: 'что делать',
+    title: 'ШАГ 1', color: 'green', sub: 'вибрация слышна', step: 'ВЫКЛЮЧИ ТЕЛЕФОН',
+    voice: 'Шаг первый. Выключи на телефоне экран, звук и вибрацию. Яркий дисплей им не страшен, а вибрация — да.',
+    keys: {шаг: 'green', выключи: 'green', вибрацию: 'green', вибрация: 'red'},
+  },
+  {
+    id: 's10', n: 10, kind: 'scene', part: 'steps', dur: 6,
+    clock: clock('ТЕЛЕФОН ВЫКЛ'), time: 'тихо', dot: 4, caption: 'что делать',
+    title: 'ШАГ 2', color: 'green', sub: 'носок не стучит', step: 'СНИМИ ОБУВЬ',
+    voice: 'Шаг второй. Сними кроссовки и останься в носках. Подошва стучит по полу, носок — нет.',
+    keys: {шаг: 'green', сними: 'green', носках: 'green', стучит: 'red'},
+  },
+  {
+    id: 's11', n: 11, kind: 'scene', part: 'steps', dur: 6,
+    clock: clock('ТЕЛЕФОН ВЫКЛ'), time: 'угол', dot: 5, caption: 'что делать',
+    title: 'ШАГ 3', color: 'green', sub: 'не ходи', step: 'СЯДЬ В УГОЛ',
+    voice: 'Шаг третий. Сядь в угол, спиной к стене, и не ходи: шаги передают вибрацию.',
+    keys: {шаг: 'green', сядь: 'green', угол: 'green', ходи: 'red', вибрацию: 'red'},
+  },
+  {
+    id: 's12', n: 12, kind: 'scene', part: 'steps', dur: 6,
+    clock: clock('ТЕЛЕФОН ВЫКЛ'), time: 'стоп', dot: 6, caption: 'что делать',
+    title: 'ШАГ 4', color: 'green', sub: 'вызов не трогай', step: 'ПАЛЕЦ НА «СТОП»',
+    voice: 'Шаг четвёртый. Не трогай кнопку вызова. Держи палец на «стоп» — она ничего не открывает.',
+    keys: {шаг: 'green', трогай: 'red', вызова: 'red', стоп: 'green'},
+  },
+  {
+    id: 's13', n: 13, kind: 'scene', part: 'twist', dur: 5,
+    clock: clock('ТЕЛЕФОН ВЫКЛ'), time: 'стук', dot: 7, caption: 'поворот',
+    title: 'SOS', color: 'gold', sub: 'стук из шахты',
+    voice: 'Из шахты стучат: три коротких, три длинных, три коротких. Это человек.',
+    keys: {стучат: 'gold', человек: 'gold'},
+  },
+  {
+    id: 's14', n: 14, kind: 'scene', part: 'twist', dur: 5,
+    clock: clock('ТЕЛЕФОН ВЫКЛ'), time: 'стук', dot: 7, caption: 'поворот',
+    title: 'ЭТО ЧЕЛОВЕК', color: 'gold', sub: 'стучит, а не кричит',
+    voice: 'Живой человек стучит, а не кричит. Значит, он тоже знает правило.',
+    keys: {живой: 'gold', стучит: 'gold', правило: 'gold'},
+  },
+  {
+    id: 's15', n: 15, kind: 'scene', part: 'twist', dur: 5,
+    clock: clock('ДВИЖЕНИЕ ВВЕРХ', '??'), time: 'этаж 32', dot: 7, caption: 'поворот',
+    title: 'ВВЕРХ', color: 'red', sub: 'выше 31-го — ничего',
+    voice: 'Кабина тронулась сама. Вверх. Но выше тридцать первого этажа ничего нет.',
+    keys: {сама: 'red', вверх: 'red', ничего: 'red', нет: 'red'},
+    impacts: [20],
+  },
+];
+
+src/core/hero.js
+
+// Миша, 24, курьер. Пропорции по паспорту: голова около 1/4 роста, большие круглые глаза рядом,
+// руки-варежки. Внешность: тёмно-каштановая стрижка с выбритыми висками, щетина, густые прямые брови,
+// оранжевая курьерская ветровка со светоотражающими полосами, серые джоггеры, тёмные кроссовки,
+// жёлтые носки, графитовый термо-рюкзак, белые наушники на шее.
+import {mix} from './math.js';
+import {f2, f3} from './html.js';
+
+export const M = {
+  skin: '#D9A07A', skinSh: '#B98058',
+  hair: '#4A2E22', hairHl: '#6B4434', fade: '#5C4034', stubble: '#5A3A2C',
+  jacket: '#E8772E', jacketSh: '#C45E1E', jacketDk: '#9E4814', stripe: '#C9CCD6',
+  pants: '#5A606E', pantsSh: '#474C58',
+  shoe: '#2A2D38', sole: '#E8E8EC', sock: '#F5C518', sockSh: '#C99A0A',
+  bag: '#3A3E4A', bagSh: '#2A2D36', phones: '#F2F2F2', phonesSh: '#B9BCC6',
+  mouth: '#3A0D0D', tongue: '#D9534F', line: '#4A2418', white: '#FFFFFF', pupil: '#1B1B22',
+};
+
+const rad = (d) => (d * Math.PI) / 180;
+const SHIN = 195;
+const LEGS = {ll: [3, -3], rl: [-3, 3], thigh: 200, shin: SHIN};
+
+// Углы: [плечо/бедро, локоть/колено] в градусах.
+export const POSES = {
+  stand: {la: [8, -6], ra: [-8, 6], ...LEGS},
+  point: {la: [8, -6], ra: [-96, -6], ...LEGS},
+  press: {la: [8, -6], ra: [-122, 8], ...LEGS},
+  cover: {la: [139, 89], ra: [-139, -89], ...LEGS},
+  sitFloor: {la: [20, -33], ra: [-20, 33], ll: [52, -52], rl: [-52, 52], thigh: 74, shin: 92},
+};
+
+export const EMOTIONS = {
+  calm: {lid: 0.15, bh: -400, bi: 0, tilt: 0, pupil: 12},
+  curious: {lid: 0, bh: -408, bi: -2, tilt: -4, pupil: 12},
+  scared: {lid: 0, bh: -406, bi: -12, tilt: 3, pupil: 10},
+  shock: {lid: 0, bh: -416, bi: -4, tilt: 0, pupil: 8},
+  focused: {lid: 0.42, bh: -396, bi: 9, tilt: 0, pupil: 12},
+  relief: {lid: 0.55, bh: -402, bi: -5, tilt: -3, pupil: 12},
+  brace: {lid: 0.62, bh: -396, bi: 10, tilt: 0, pupil: 12},
+  shout: {lid: 0, bh: -398, bi: 12, tilt: 0, pupil: 10},
+};
+
+const HAIR = 'M -98 -398 Q -104 -476 -16 -486 Q 78 -492 100 -418 L 98 -398 Q 90 -430 60 -436 L 40 -424 L 18 -438 L -4 -426 L -28 -440 L -52 -428 Q -84 -432 -98 -398 Z';
+const HAIR_HL = 'M -50 -470 Q 10 -486 64 -464 Q 16 -474 -36 -460 Z';
+const STUBBLE = 'M -84 -334 Q -76 -270 0 -262 Q 76 -270 84 -334 Q 64 -296 0 -292 Q -64 -296 -84 -334 Z';
+const TORSO = 'M -92 -252 Q -98 -272 -66 -272 L 66 -272 Q 98 -272 92 -252 L 106 -8 Q 106 14 82 14 L -82 14 Q -106 14 -106 -8 Z';
+const TORSO_SH = 'M 64 -272 Q 98 -272 92 -252 L 106 -8 Q 106 14 82 14 L 74 14 Z';
+
+export function mixPose(a, b, t) {
+  const m = (p, q) => [mix(p[0], q[0], t), mix(p[1], q[1], t)];
+  return {
+    la: m(a.la, b.la), ra: m(a.ra, b.ra), ll: m(a.ll, b.ll), rl: m(a.rl, b.rl),
+    thigh: mix(a.thigh, b.thigh, t), shin: mix(a.shin ?? SHIN, b.shin ?? SHIN, t),
+  };
+}
+function resolvePose(pose, pose2, mixT) {
+  const a = POSES[pose] || POSES.stand;
+  return pose2 ? mixPose(a, POSES[pose2] || POSES.stand, mixT) : a;
+}
+function groundOffset(P) {
+  return -10 + P.thigh * Math.cos(rad(P.ll[0])) + (P.shin ?? SHIN) * Math.cos(rad(P.ll[0] + P.ll[1])) + 28;
+}
+function blinkLid(base, local, seed) {
+  const period = 96 + ((seed * 17) % 40);
+  const bt = (((local + seed * 29) % period) + period) % period;
+  const blink = bt < 3 ? bt / 3 : bt < 6 ? (6 - bt) / 3 : 0;
+  return Math.min(1, base + blink * (1 - base));
+}
+
+function eye(cx, cy, r, lid, px, py, pupil) {
+  if (lid >= 0.97) {
+    return `<circle cx='${cx}' cy='${cy}' r='${r + 1}' fill='${M.skin}'/><path d='M ${cx - r + 4} ${cy + 2} Q ${cx} ${cy + 12} ${cx + r - 4} ${cy + 2}' stroke='${M.line}' stroke-width='5' fill='none' stroke-linecap='round'/>`;
+  }
+  let out = `<circle cx='${cx}' cy='${cy}' r='${r}' fill='${M.white}'/><circle cx='${f2(cx + px)}' cy='${f2(cy + 3 + py)}' r='${pupil}' fill='${M.pupil}'/><circle cx='${f2(cx + px + 4)}' cy='${f2(cy - 2 + py)}' r='${f2(pupil * 0.3)}' fill='${M.white}'/>`;
+  if (lid > 0.02) {
+    const R = r + 2; // веко чуть больше глаза: кольцо белка не просвечивает
+    const dy = -r + 2 * r * lid;
+    const w = Math.sqrt(Math.max(0, R * R - dy * dy));
+    const lw = Math.sqrt(Math.max(0, r * r - dy * dy));
+    out += `<path d='M ${f2(cx - w)} ${f2(cy + dy)} A ${R} ${R} 0 ${dy > 0 ? 1 : 0} 1 ${f2(cx + w)} ${f2(cy + dy)} Z' fill='${M.skin}'/>`;
+    out += `<line x1='${f2(cx - lw)}' y1='${f2(cy + dy)}' x2='${f2(cx + lw)}' y2='${f2(cy + dy)}' stroke='${M.skinSh}' stroke-width='4' stroke-linecap='round'/>`;
+  }
+  return out;
+}
+
+function mouth(e) {
+  const st = `stroke='${M.line}' stroke-width='6' fill='none' stroke-linecap='round'`;
+  switch (e) {
+    case 'calm': return `<path d='M -16 -294 Q 0 -287 16 -294' ${st}/>`;
+    case 'curious': return `<ellipse cx='0' cy='-292' rx='9' ry='8' fill='${M.mouth}'/>`;
+    case 'scared': return `<path d='M -20 -288 Q -10 -298 0 -292 Q 10 -286 20 -296' ${st}/>`;
+    case 'shock': return `<ellipse cx='0' cy='-290' rx='18' ry='18' fill='${M.mouth}'/><ellipse cx='0' cy='-279' rx='10' ry='5' fill='${M.tongue}'/>`;
+    case 'focused': return `<path d='M -14 -292 L 14 -292' ${st}/>`;
+    case 'relief': return `<path d='M -22 -296 Q 0 -280 22 -296' ${st}/>`;
+    case 'brace': return `<ellipse cx='0' cy='-290' rx='11' ry='8' fill='${M.mouth}'/>`;
+    case 'shout': return `<path d='M -24 -302 Q 0 -308 24 -302 Q 22 -270 0 -266 Q -22 -270 -24 -302 Z' fill='${M.mouth}'/><rect x='-15' y='-304' width='30' height='7' rx='3' fill='${M.white}'/><ellipse cx='0' cy='-276' rx='11' ry='5' fill='${M.tongue}'/>`;
+    default: return '';
+  }
+}
+
+function headSvg(E, emotion, lid, px, py, sweat, local) {
+  const brow = (sd) => `<line x1='${sd * 64}' y1='${E.bh}' x2='${sd * 12}' y2='${E.bh + E.bi}' stroke='${M.hair}' stroke-width='15' stroke-linecap='round'/>`;
+  const ears = [-1, 1].map((sd) => `<circle cx='${sd * 96}' cy='-350' r='24' fill='${M.skin}'/><circle cx='${sd * 96}' cy='-350' r='12' fill='${M.skinSh}'/>`).join('');
+  const k = local % 40;
+  const drop = sweat ? `<path d='M 0 -14 Q 10 0 0 8 Q -10 0 0 -14 Z' transform='translate(80 ${f2(-392 + k * 1.2)})' fill='#9FD8FF' opacity='${f3(1 - k / 40)}'/>` : '';
+  return `<g transform='rotate(${E.tilt} 0 -290)'>
+${ears}
+<ellipse cx='0' cy='-360' rx='98' ry='108' fill='${M.skinSh}'/>
+<ellipse cx='0' cy='-372' rx='96' ry='98' fill='${M.skin}'/>
+<ellipse cx='-84' cy='-408' rx='16' ry='34' fill='${M.fade}' opacity='0.55'/>
+<ellipse cx='84' cy='-408' rx='16' ry='34' fill='${M.fade}' opacity='0.55'/>
+<path d='${HAIR}' fill='${M.hair}'/>
+<path d='${HAIR_HL}' fill='${M.hairHl}' opacity='0.7'/>
+<path d='${STUBBLE}' fill='${M.stubble}' opacity='0.28'/>
+${eye(-32, -352, 30, lid, px, py, E.pupil)}${eye(32, -352, 30, lid, px, py, E.pupil)}
+${brow(-1)}${brow(1)}
+<ellipse cx='4' cy='-316' rx='14' ry='10' fill='${M.skinSh}'/>
+${mouth(emotion)}
+${drop}
+</g>`;
+}
+
+function limb({x, y, a, l1, l2, w, color, cuff = '', end = '', upright = ''}) {
+  const back = -(a[0] + a[1]);
+  return `<g transform='translate(${f2(x)} ${f2(y)}) rotate(${f2(a[0])})'>` +
+    `<line x1='0' y1='0' x2='0' y2='${f2(l1)}' stroke='${color}' stroke-width='${w}' stroke-linecap='round'/>` +
+    `<g transform='translate(0 ${f2(l1)}) rotate(${f2(a[1])})'>` +
+    `<line x1='0' y1='0' x2='0' y2='${f2(l2)}' stroke='${color}' stroke-width='${w}' stroke-linecap='round'/>` +
+    (cuff ? `<line x1='0' y1='${f2(l2 - 24)}' x2='0' y2='${f2(l2 - 8)}' stroke='${cuff}' stroke-width='${w + 4}'/>` : '') +
+    `<g transform='translate(0 ${f2(l2)})'>${end}${upright ? `<g transform='rotate(${f2(back)})'>${upright}</g>` : ''}</g>` +
+    `</g></g>`;
+}
+const shoe = (ox) => `<rect x='${ox}' y='-10' width='84' height='36' rx='17' fill='${M.shoe}'/><rect x='${ox}' y='18' width='84' height='10' rx='5' fill='${M.sole}'/>`;
+const sock = (ox) => `<rect x='${ox + 6}' y='-4' width='72' height='30' rx='15' fill='${M.sock}'/><rect x='${ox + 6}' y='14' width='72' height='12' rx='6' fill='${M.sockSh}'/>`;
+const hand = (thumb) => `<circle cx='0' cy='6' r='24' fill='${M.skin}'/><circle cx='-13' cy='26' r='10' fill='${M.skin}'/><circle cx='0' cy='30' r='10' fill='${M.skin}'/><circle cx='13' cy='26' r='10' fill='${M.skin}'/><circle cx='${thumb * 22}' cy='2' r='10' fill='${M.skin}'/><path d='M -8 20 Q 0 24 8 20' stroke='${M.skinSh}' stroke-width='3' fill='none' stroke-linecap='round'/>`;
+
+// Миша во весь рост, фронтально. y — линия пола под ногами. shoes: false — в носках.
+export function hero(opts = {}) {
+  const {pose = 'stand', pose2 = null, mixT = 0, emotion = 'calm', look = 0, lookY = 0, sweat = false, x = 0, y = 0, s = 1, flip = false, local = 0, seed = 0, shadow = true, shoes = true} = opts;
+  const P = resolvePose(pose, pose2, mixT);
+  const E = EMOTIONS[emotion] || EMOTIONS.calm;
+  const breath = Math.sin((local + seed * 13) / 16);
+  const lid = blinkLid(E.lid, local, seed);
+  const G = groundOffset(P);
+  const foot = shoes ? shoe : sock;
+  const legs =
+    limb({x: -38, y: -10, a: P.ll, l1: P.thigh, l2: P.shin, w: 62, color: M.pants, cuff: M.pantsSh, upright: foot(-54)}) +
+    limb({x: 38, y: -10, a: P.rl, l1: P.thigh, l2: P.shin, w: 62, color: M.pants, cuff: M.pantsSh, upright: foot(-30)});
+  // Колени видны, когда бедро укорочено (сидит): поза читается как сидячая.
+  const ko = Math.min(1, Math.max(0, (110 - P.thigh) / 30));
+  const knee = (hx, a) => {
+    const kx = hx - P.thigh * Math.sin(rad(a[0]));
+    const ky = -10 + P.thigh * Math.cos(rad(a[0]));
+    return `<ellipse cx='${f2(kx)}' cy='${f2(ky)}' rx='38' ry='30' fill='${M.pants}'/><ellipse cx='${f2(kx - 8)}' cy='${f2(ky - 10)}' rx='16' ry='9' fill='#6A7080'/>`;
+  };
+  const knees = ko > 0.01 ? `<g opacity='${f3(ko)}'>${knee(-38, P.ll)}${knee(38, P.rl)}</g>` : '';
+  const bag = `<rect x='-130' y='-312' width='260' height='270' rx='30' fill='${M.bag}'/><rect x='-130' y='-312' width='260' height='44' rx='22' fill='${M.bagSh}'/>`;
+  const band = `<path d='M -62 -262 Q 0 -300 62 -262' stroke='${M.phones}' stroke-width='9' fill='none'/>`;
+  const neck = `<rect x='-22' y='-300' width='44' height='40' rx='10' fill='${M.skinSh}'/>`;
+  const torso = `<g transform='translate(0 14) scale(1 ${f3(1 + 0.01 * (1 + breath))}) translate(0 -14)'><path d='${TORSO}' fill='${M.jacket}'/><path d='${TORSO_SH}' fill='${M.jacketSh}' opacity='0.8'/><rect x='-96' y='-178' width='192' height='16' fill='${M.stripe}'/><rect x='-106' y='-14' width='212' height='28' rx='12' fill='${M.jacketSh}'/><line x1='0' y1='-256' x2='0' y2='0' stroke='${M.jacketDk}' stroke-width='6'/><rect x='-80' y='-96' width='56' height='12' rx='6' fill='${M.jacketDk}'/><rect x='24' y='-96' width='56' height='12' rx='6' fill='${M.jacketDk}'/></g>`;
+  const collar = `<path d='M -52 -270 Q -50 -294 -28 -296 L 28 -296 Q 50 -294 52 -270 Z' fill='${M.jacketDk}'/>`;
+  const cups = `<rect x='-78' y='-286' width='30' height='40' rx='12' fill='${M.phones}'/><rect x='-72' y='-278' width='18' height='24' rx='8' fill='${M.phonesSh}'/><rect x='48' y='-286' width='30' height='40' rx='12' fill='${M.phones}'/><rect x='54' y='-278' width='18' height='24' rx='8' fill='${M.phonesSh}'/>`;
+  const straps = `<path d='M -64 -264 L -56 -110' stroke='${M.bag}' stroke-width='18' stroke-linecap='round'/><path d='M 64 -264 L 56 -110' stroke='${M.bag}' stroke-width='18' stroke-linecap='round'/><rect x='-60' y='-150' width='120' height='10' rx='5' fill='${M.bagSh}'/>`;
+  const head = headSvg(E, emotion, lid, look * 9, lookY * 6, sweat, local);
+  const arms =
+    limb({x: -88, y: -240, a: P.la, l1: 125, l2: 120, w: 50, color: M.jacket, cuff: M.stripe, end: hand(1)}) +
+    limb({x: 88, y: -240, a: P.ra, l1: 125, l2: 120, w: 50, color: M.jacket, cuff: M.stripe, end: hand(-1)});
+  const sh = shadow ? `<ellipse cx='0' cy='0' rx='${P.thigh < 110 ? 160 : 135}' ry='16' fill='#000' opacity='0.35'/>` : '';
+  return `<g transform='translate(${f2(x)} ${f2(y)}) scale(${f3(flip ? -s : s)} ${f3(s)})'>${sh}<g transform='translate(0 ${f2(-G)})'>${legs}${knees}<g transform='translate(0 ${f2(-breath * 1.5)})'>${bag}${band}${neck}${torso}${collar}${cups}${straps}${head}${arms}</g></g></g>`;
+}
+
+// Точка на фигуре в координатах кадра: top (макушка), head (центр головы), mouth (рот).
+export function heroPoint(opts = {}, which = 'mouth') {
+  const {pose = 'stand', pose2 = null, mixT = 0, x = 0, y = 0, s = 1} = opts;
+  const G = groundOffset(resolvePose(pose, pose2, mixT));
+  const ly = {top: -486, head: -372, mouth: -290}[which] ?? -290;
+  return {x, y: y + s * (ly - G)};
+}
+
+// Только голова (для стиль-листа): x, y — центр головы.
+export function heroHead(opts = {}) {
+  const {emotion = 'calm', x = 0, y = 0, s = 1, local = 0, seed = 0, look = 0, lookY = 0, sweat = false} = opts;
+  const E = EMOTIONS[emotion] || EMOTIONS.calm;
+  return `<g transform='translate(${f2(x)} ${f2(y)}) scale(${f3(s)}) translate(0 372)'>${headSvg(E, emotion, blinkLid(E.lid, local, seed), look * 9, lookY * 6, sweat, local)}</g>`;
+}
+
+src/core/props.js
+
+// Реквизит: кабина (вид на стену с дверями), панель крупно, разрез башни, рюкзак, кроссовки, носки, рука.
+import {C} from './theme.js';
+import {f2, f3} from './html.js';
+import {bg, svgText} from './world.js';
+import {M} from './hero.js';
+
+export const FLOOR_Y = 1300;
+const D = {x: 300, y: 640, w: 480, h: 660}; // проём дверей
+const PANEL = {x: 836, y: 760, w: 104, h: 380}; // панель справа от дверей
+
+function smallPanel({speaker = 0, litCount = 1, openAlert = 0}) {
+  const P = PANEL;
+  let s = `<rect x='${P.x}' y='${P.y}' width='${P.w}' height='${P.h}' rx='14' fill='${C.metalDk}' stroke='#3A4058' stroke-width='3'/>`;
+  for (let i = 0; i < 3; i += 1) {
+    for (let j = 0; j < 4; j += 1) s += `<circle cx='${P.x + 22 + j * 14}' cy='${P.y + 20 + i * 12}' r='3' fill='#0A0C15'/>`;
+  }
+  const lx = P.x + P.w - 16;
+  const ly = P.y + 32;
+  if (speaker) s += `<circle cx='${lx}' cy='${ly}' r='18' fill='${C.red}' opacity='0.3'/>`;
+  s += `<circle cx='${lx}' cy='${ly}' r='7' fill='${speaker ? C.red : '#3A2228'}'/>`;
+  for (let r = 0; r < 8; r += 1) {
+    for (let c = 0; c < 2; c += 1) {
+      const on = r * 2 + c < litCount;
+      const cx = P.x + 32 + c * 40;
+      const cy = P.y + 78 + r * 30;
+      if (on) s += `<circle cx='${cx}' cy='${cy}' r='18' fill='${C.gold}' opacity='0.25'/>`;
+      s += `<circle cx='${cx}' cy='${cy}' r='11' fill='${on ? C.gold : C.metalLt}'/>`;
+    }
+  }
+  const by = P.y + P.h - 36;
+  const ox = P.x + 32;
+  const sx = P.x + 72;
+  s += `<circle cx='${ox}' cy='${by}' r='14' fill='${C.metalLt}'/><path d='M ${ox - 3} ${by - 6} L ${ox - 11} ${by} L ${ox - 3} ${by + 6} Z M ${ox + 3} ${by - 6} L ${ox + 11} ${by} L ${ox + 3} ${by + 6} Z' fill='#C9CCD6'/>`;
+  s += `<circle cx='${sx}' cy='${by}' r='14' fill='${C.red}'/>`;
+  if (openAlert > 0.01) {
+    s += `<g opacity='${f3(openAlert)}'><circle cx='${ox}' cy='${by}' r='26' fill='none' stroke='${C.red}' stroke-width='4' stroke-dasharray='8 6'/><line x1='${ox - 28}' y1='${by + 28}' x2='${ox + 28}' y2='${by - 28}' stroke='${C.red}' stroke-width='5' stroke-linecap='round'/></g>`;
+  }
+  return s;
+}
+
+// Кабина 2×2 м изнутри: стена с дверями, табло этажа, аварийная лампа, панель, пол.
+// gap 0…1 — двери разъезжаются, за ними тусклый красный коридор.
+export function cabin(uid, o = {}) {
+  const {floor = '31', displayOn = 1, arrow = '', gap = 0, corridor = 0, sideWall = false} = o;
+  const gp = gap * 210;
+  const mid = D.x + D.w / 2;
+  let s = bg(C.metal);
+  for (let sx = 40; sx < 1080; sx += 170) s += `<rect x='${sx}' y='560' width='4' height='${FLOOR_Y - 560}' fill='#363C52'/>`;
+  s += `<rect x='-80' y='500' width='1240' height='76' fill='${C.metalDk}'/>`;
+  s += `<ellipse cx='200' cy='610' rx='210' ry='80' fill='${C.amber}' opacity='0.12'/><rect x='130' y='578' width='140' height='16' rx='8' fill='${C.amber}'/>`;
+  s += `<rect x='${D.x - 16}' y='${D.y - 16}' width='${D.w + 32}' height='${D.h + 16}' fill='${C.metalDk}'/>`;
+  s += `<rect x='${D.x}' y='${D.y}' width='${D.w}' height='${D.h}' fill='#0A0608'/>`;
+  if (gp > 0.5) {
+    s += `<defs><radialGradient id='cor-${uid}' cx='0.5' cy='0.5' r='0.7'><stop offset='0' stop-color='${C.red}' stop-opacity='${f3(0.3 + 0.3 * corridor)}'/><stop offset='1' stop-color='${C.red}' stop-opacity='0'/></radialGradient></defs>`;
+    s += `<rect x='${f2(mid - gp)}' y='${D.y}' width='${f2(gp * 2)}' height='${D.h}' fill='url(#cor-${uid})'/>`;
+  }
+  const lw = D.w / 2 - gp;
+  const leaf = (lx) => `<rect x='${f2(lx)}' y='${D.y}' width='${f2(lw)}' height='${D.h}' fill='${C.metalLt}'/><rect x='${f2(lx + 14)}' y='${D.y + 18}' width='${f2(Math.max(0, lw - 28))}' height='${D.h - 36}' fill='#555C78' opacity='0.45'/>`;
+  if (lw > 0) s += leaf(D.x) + leaf(mid + gp);
+  s += `<line x1='${f2(mid - gp)}' y1='${D.y}' x2='${f2(mid - gp)}' y2='${D.y + D.h}' stroke='#22263A' stroke-width='4'/>`;
+  if (gp > 0.5) s += `<line x1='${f2(mid + gp)}' y1='${D.y}' x2='${f2(mid + gp)}' y2='${D.y + D.h}' stroke='#22263A' stroke-width='4'/>`;
+  s += `<rect x='470' y='592' width='140' height='46' rx='8' fill='#07080F' stroke='${C.metalLt}' stroke-width='3'/>`;
+  s += svgText(arrow ? 558 : 540, 627, floor, {size: 32, color: C.gold, weight: 700, anchor: 'middle', opacity: displayOn, spacing: 2});
+  if (arrow) s += svgText(500, 626, arrow, {size: 28, color: C.gold, weight: 700, anchor: 'middle', opacity: displayOn, spacing: 0});
+  s += smallPanel(o);
+  s += `<rect x='-80' y='${FLOOR_Y}' width='1240' height='720' fill='#171A28'/><rect x='-80' y='${FLOOR_Y - 6}' width='1240' height='10' fill='#2A2F45'/>`;
+  if (sideWall) s += `<polygon points='-80,500 140,576 140,${FLOOR_Y} -80,${FLOOR_Y + 90}' fill='#252A3C'/><line x1='140' y1='576' x2='140' y2='${FLOOR_Y}' stroke='#3A4058' stroke-width='4'/>`;
+  return s;
+}
+
+// Свет кабины поверх персонажей: тёплый янтарный оттенок, при light < 1 — темнота.
+export function cabinLight(light = 1) {
+  let s = `<rect x='-80' y='-80' width='1240' height='2080' fill='${C.amber}' opacity='${f3(0.05 * light)}'/>`;
+  if (light < 0.999) s += `<rect x='-80' y='-80' width='1240' height='2080' fill='#03040A' opacity='${f3((1 - light) * 0.72)}'/>`;
+  return s;
+}
+
+// Панель крупно: динамик, индикатор, экран (запись — повторяющаяся волна), кнопки 1–31 (13-й есть),
+// внизу «открыть», «закрыть», «вызов», «стоп». Возвращает svg и координаты нижних кнопок.
+export function panelClose(o) {
+  const {x, y, w, h, lit = [], callRing = 0, stopRing = 0, speaker = 0, wave = null} = o;
+  let s = `<rect x='${x}' y='${y}' width='${w}' height='${h}' rx='28' fill='${C.metalDk}' stroke='#3A4058' stroke-width='5'/>`;
+  const gx = x + w / 2 - 90;
+  for (let i = 0; i < 4; i += 1) {
+    for (let j = 0; j < 10; j += 1) s += `<circle cx='${f2(gx + j * 20)}' cy='${y + 34 + i * 18}' r='5' fill='#0A0C15'/>`;
+  }
+  const lx = x + w - 40;
+  const ly = y + 40;
+  if (speaker) s += `<circle cx='${lx}' cy='${ly}' r='24' fill='${C.red}' opacity='0.3'/>`;
+  s += `<circle cx='${lx}' cy='${ly}' r='10' fill='${speaker ? C.red : '#3A2228'}'/>`;
+  const sy = y + 118;
+  s += `<rect x='${x + 30}' y='${sy}' width='${w - 60}' height='56' rx='10' fill='#07080F'/>`;
+  if (wave != null) {
+    const n = 22;
+    const bw2 = (w - 100) / n;
+    const loop = Math.floor(wave) % 30;
+    for (let i = 0; i < n; i += 1) {
+      const hh = 6 + 20 * Math.abs(Math.sin(i * 1.7 + loop * 0.42));
+      s += `<rect x='${f2(x + 50 + i * bw2)}' y='${f2(sy + 28 - hh / 2)}' width='${f2(bw2 * 0.6)}' height='${f2(hh)}' rx='2' fill='${C.red}'/>`;
+    }
+  } else {
+    s += svgText(x + w / 2, sy + 40, '31', {size: 32, color: C.gold, weight: 700, anchor: 'middle'});
+  }
+  const top = y + 196;
+  const by = y + h - 80;
+  const rh = (by - 50 - top) / 8;
+  const bw = (w - 60) / 4;
+  const r = Math.min(bw, rh) * 0.36;
+  for (let rr = 0; rr < 8; rr += 1) {
+    for (let c = 0; c < 4; c += 1) {
+      const n = rr * 4 + c + 1;
+      if (n > 31) continue;
+      const cx = x + 30 + bw * (c + 0.5);
+      const cy = top + (7 - rr) * rh + rh / 2;
+      const on = lit.includes(n);
+      s += `<circle cx='${f2(cx)}' cy='${f2(cy)}' r='${f2(r)}' fill='${on ? C.gold : '#3A4058'}' stroke='#5A6078' stroke-width='2'/>`;
+      if (r >= 13) s += svgText(cx, cy + r * 0.38, String(n), {size: Math.round(r * 1.05), color: on ? '#14172B' : '#C9CCD6', weight: 700, anchor: 'middle', spacing: 0});
+    }
+  }
+  const R = 34;
+  const pos = {open: [x + w * 0.16, by], close: [x + w * 0.38, by], call: [x + w * 0.62, by], stop: [x + w * 0.85, by]};
+  const btn = (p, fill) => `<circle cx='${f2(p[0])}' cy='${f2(p[1])}' r='${R}' fill='${fill}' stroke='#5A6078' stroke-width='3'/>`;
+  const at = (p) => `transform='translate(${f2(p[0])} ${f2(p[1])})'`;
+  s += btn(pos.open, '#3A4058') + `<g ${at(pos.open)}><path d='M -5 -12 L -20 0 L -5 12 Z M 5 -12 L 20 0 L 5 12 Z' fill='#C9CCD6'/></g>`;
+  s += btn(pos.close, '#3A4058') + `<g ${at(pos.close)}><path d='M -20 -12 L -5 0 L -20 12 Z M 20 -12 L 5 0 L 20 12 Z' fill='#C9CCD6'/></g>`;
+  s += btn(pos.call, '#3A4058') + `<g ${at(pos.call)}><path d='M -14 8 Q -14 -14 0 -16 Q 14 -14 14 8 L 18 12 L -18 12 Z' fill='${C.gold}'/><circle cx='0' cy='17' r='4' fill='${C.gold}'/></g>`;
+  s += btn(pos.stop, C.red) + svgText(pos.stop[0], pos.stop[1] + 6, 'СТОП', {size: 16, color: '#FFFFFF', weight: 700, anchor: 'middle', spacing: 0});
+  if (callRing > 0.01) {
+    s += `<g opacity='${f3(callRing)}'><circle cx='${f2(pos.call[0])}' cy='${f2(pos.call[1])}' r='${R + 14}' fill='none' stroke='${C.red}' stroke-width='5' stroke-dasharray='10 8'/><line x1='${f2(pos.call[0] - 40)}' y1='${f2(pos.call[1] + 40)}' x2='${f2(pos.call[0] + 40)}' y2='${f2(pos.call[1] - 40)}' stroke='${C.red}' stroke-width='6' stroke-linecap='round'/></g>`;
+  }
+  if (stopRing > 0.01) {
+    s += `<circle cx='${f2(pos.stop[0])}' cy='${f2(pos.stop[1])}' r='${R + 14}' fill='none' stroke='${C.green}' stroke-width='6' opacity='${f3(stopRing)}'/><circle cx='${f2(pos.stop[0])}' cy='${f2(pos.stop[1])}' r='${R + 30}' fill='${C.green}' opacity='${f3(stopRing * 0.15)}'/>`;
+  }
+  return {svg: s, pos};
+}
+
+// Разрез башни: этажи from…to снизу вверх, шахта, кабина (зелёная), красные точки — заражённые.
+export const floorTop = (o, n) => o.ground - (n - (o.from ?? 1) + 1) * o.fh;
+
+export function towerSection(uid, o) {
+  const {x, w, ground, fh, from = 1, to = 31, shaftX, sw = 90, cabinFloor = 31, dots = {}, labels = [], roof = true} = o;
+  const fy = (n) => ground - (n - from + 1) * fh;
+  const topY = fy(to);
+  let s = `<rect x='${x}' y='${f2(topY)}' width='${w}' height='${f2(ground - topY)}' fill='#1A1F36'/>`;
+  for (let n = from; n <= to; n += 1) {
+    const yy = fy(n);
+    s += `<line x1='${x}' y1='${f2(yy)}' x2='${x + w}' y2='${f2(yy)}' stroke='#2A3050' stroke-width='3'/>`;
+    if (labels.includes(n)) s += svgText(x - 14, yy + fh * 0.5 + 8, String(n), {size: 22, anchor: 'end', color: n === cabinFloor ? C.green : C.grey, weight: 700});
+    const d = dots[n] || 0;
+    if (d > 0.01) {
+      [0.18, 0.82].forEach((u) => {
+        const dx = x + u * w;
+        if (dx > shaftX - 14 && dx < shaftX + sw + 14) return;
+        s += `<circle cx='${f2(dx)}' cy='${f2(yy + fh / 2)}' r='${f2(Math.min(9, fh * 0.32))}' fill='${C.red}' opacity='${f3(d)}'/>`;
+      });
+    }
+  }
+  s += `<rect x='${shaftX}' y='${f2(topY)}' width='${sw}' height='${f2(ground - topY)}' fill='#0A0C15'/>`;
+  const cy = fy(cabinFloor);
+  s += `<rect x='${shaftX + 5}' y='${f2(cy + 3)}' width='${sw - 10}' height='${f2(fh - 6)}' rx='4' fill='${C.green}' fill-opacity='0.3' stroke='${C.green}' stroke-width='4'/>`;
+  if (roof) s += `<rect x='${x - 16}' y='${f2(topY - 18)}' width='${w + 32}' height='18' fill='#2E3658'/>`;
+  return s;
+}
+
+// Графитовый термо-рюкзак Миши.
+export function backpack(x, y, s = 1) {
+  return `<g transform='translate(${f2(x)} ${f2(y)}) scale(${f3(s)})'>
+<ellipse cx='0' cy='150' rx='170' ry='16' fill='#000' opacity='0.35'/>
+<rect x='-150' y='-150' width='300' height='300' rx='34' fill='${M.bag}'/>
+<rect x='-150' y='-150' width='300' height='70' rx='30' fill='${M.bagSh}'/>
+<rect x='-120' y='10' width='240' height='14' rx='7' fill='${M.stripe}'/>
+<rect x='-40' y='-172' width='80' height='28' rx='14' fill='none' stroke='${M.bagSh}' stroke-width='10'/>
+</g>`;
+}
+
+// Тёмный кроссовок, вид спереди. Низ подошвы — y + 44·s.
+export function sneakerFront(x, y, s = 1, rot = 0, opacity = 1) {
+  return `<g transform='translate(${f2(x)} ${f2(y)}) rotate(${f2(rot)}) scale(${f3(s)})' opacity='${f3(opacity)}'>
+<path d='M -84 30 Q -88 -28 -44 -40 L 44 -40 Q 88 -28 84 30 Z' fill='${M.shoe}'/>
+<rect x='-88' y='22' width='176' height='22' rx='11' fill='${M.sole}'/>
+<path d='M -24 -30 L 24 -30 M -28 -14 L 28 -14' stroke='#5A5F6E' stroke-width='6' stroke-linecap='round'/>
+</g>`;
+}
+
+// Жёлтый носок, вид спереди. Низ — y + 36·s.
+export function sockFront(x, y, s = 1) {
+  return `<g transform='translate(${f2(x)} ${f2(y)}) scale(${f3(s)})'><path d='M -66 36 Q -70 -18 -34 -34 L 34 -34 Q 70 -18 66 36 Z' fill='${M.sock}'/><rect x='-66' y='22' width='132' height='14' rx='7' fill='${M.sockSh}'/></g>`;
+}
+
+// Рука Миши крупно с вытянутым указательным пальцем. Кончик пальца — (x, y − 112·s).
+export function pointingHand(x, y, s = 1) {
+  return `<g transform='translate(${f2(x)} ${f2(y)}) scale(${f3(s)})'>
+<line x1='0' y1='80' x2='0' y2='460' stroke='${M.jacket}' stroke-width='100' stroke-linecap='round'/>
+<rect x='-54' y='84' width='108' height='24' fill='${M.stripe}'/>
+<circle cx='0' cy='30' r='64' fill='${M.skin}'/>
+<circle cx='-44' cy='0' r='24' fill='${M.skin}'/><circle cx='44' cy='4' r='24' fill='${M.skin}'/>
+<circle cx='52' cy='40' r='22' fill='${M.skin}'/>
+<rect x='-21' y='-112' width='42' height='130' rx='21' fill='${M.skin}'/>
+<path d='M -10 -60 Q 0 -54 10 -60' stroke='${M.skinSh}' stroke-width='4' fill='none' stroke-linecap='round'/>
+<path d='M -30 30 Q -10 44 14 34' stroke='${M.skinSh}' stroke-width='4' fill='none' stroke-linecap='round'/>
+</g>`;
+}
+
+src/core/stylesheet.js
+
+// Стиль-лист для сверки. Кадры 0–44: Миша (эмоции, позы, вещи). Кадры 45–89: элементы.
+import {C, H, W} from './theme.js';
+import {EMOTIONS, hero, heroHead} from './hero.js';
+import {bigClock, callout, clockPlate, hud, slantBanner, stepBar} from './ui.js';
+import {backpack, panelClose, pointingHand, sneakerFront, sockFront} from './props.js';
+import {bg, svgText} from './world.js';
+
+const FULL = `position:absolute;left:0;top:0;width:${W}px;height:${H}px`;
+const RU = {calm: 'спокоен', curious: 'интерес', scared: 'страх', shock: 'шок', focused: 'собран', relief: 'облегчение', brace: 'сжался', shout: 'крик'};
+const POSES = [['stand', 'calm', 'стоит'], ['point', 'focused', 'указывает'], ['press', 'shout', 'жмёт кнопку'], ['cover', 'brace', 'закрылся'], ['sitFloor', 'calm', 'сидит на полу']];
+const wrap = (svg, html) => `<div style='${FULL};background:${C.navy}'><svg width='${W}' height='${H}' viewBox='0 0 ${W} ${H}' style='position:absolute;left:0;top:0'>${svg}</svg>${html}</div>`;
+
+function pageCharacter(local) {
+  let svg = bg(C.navy);
+  Object.keys(EMOTIONS).forEach((e, i) => {
+    const cx = 150 + (i % 4) * 260;
+    const cy = i < 4 ? 330 : 620;
+    svg += heroHead({emotion: e, x: cx, y: cy, s: 0.85, local, seed: i, sweat: e === 'scared' || e === 'shock'});
+    svg += svgText(cx, cy + 150, RU[e].toUpperCase(), {size: 24, anchor: 'middle', weight: 700});
+  });
+  POSES.forEach(([p, e, name], i) => {
+    const x = 120 + i * 210;
+    svg += hero({pose: p, emotion: e, x, y: 1330, s: 0.44, local, seed: i + 3, shoes: p !== 'sitFloor'});
+    svg += svgText(x, 1380, name.toUpperCase(), {size: 20, anchor: 'middle'});
+  });
+  svg += backpack(200, 1620, 0.6) + svgText(200, 1780, 'ТЕРМО-РЮКЗАК', {size: 20, anchor: 'middle'});
+  svg += sneakerFront(540, 1660, 1) + svgText(540, 1780, 'КРОССОВКИ', {size: 20, anchor: 'middle'});
+  svg += sockFront(860, 1668, 1) + svgText(860, 1780, 'НОСКИ', {size: 20, anchor: 'middle'});
+  return wrap(svg, clockPlate('СТИЛЬ-ЛИСТ А · МИША, 24'));
+}
+
+function pageUI() {
+  const P = panelClose({x: 620, y: 700, w: 400, h: 600, callRing: 1, stopRing: 1});
+  const [sx, sy] = P.pos.stop;
+  const svg = bg(C.navy) + P.svg + pointingHand(sx, sy + 112 * 0.7, 0.7);
+  const html =
+    hud({x: 40, y: 170, color: 'red', icon: 'warn', title: 'Опасность', sub: 'красный · #FF3B3B'}) +
+    hud({x: 40, y: 300, color: 'green', icon: 'check', title: 'Правильно', sub: 'зелёный · #3DDC84'}) +
+    hud({x: 40, y: 430, color: 'blue', icon: 'eyeoff', title: 'Информация', sub: 'синий · #3A8DFF'}) +
+    hud({x: 40, y: 560, color: 'gold', icon: 'target', title: 'Важное', sub: 'золото · #F5C518'}) +
+    callout({x: 600, y: 170, w: 440, label: 'МИША:', text: '«Помогите!»', tailX: 80}) +
+    callout({x: 600, y: 420, w: 440, label: 'ДИСПЕТЧЕР:', text: '«Не волнуйтесь»', tailX: 360, color: 'red'}) +
+    bigClock({x: 40, y: 720, w: 520, text: '1:58', label: 'аварийное питание', size: 110}) +
+    hud({x: 40, y: 1000, color: 'red', icon: 'ear', title: 'Слышат', sub: 'голос · шаги'}) +
+    hud({x: 40, y: 1140, color: 'blue', icon: 'mute', title: 'Тишина', sub: 'значок звука'}) +
+    stepBar(1, 'Выключи телефон', null, 1340) +
+    slantBanner({title: '32 этажа нет', sub: 'башня кончается на 31-м', y: 1500}) +
+    clockPlate('СТИЛЬ-ЛИСТ Б · ЭЛЕМЕНТЫ');
+  return wrap(svg, html);
+}
+
+export function styleSheet(frame = 0) {
+  return frame < 45 ? pageCharacter(frame) : pageUI();
+}
+
+Тридцать первый · Серия 1 — код, часть 3: сцены
+
+Часть 3 из 3. Все сцены серии и их реестр. Титр «ЭПИЗОД 1 · НЕ ЖМИ «ОТКРЫТЬ»» (4–7 с) рисует общий движок.
+
+src/core/scenes/index.js    реестр
+src/core/scenes/part-a.js   сцена 0 (крючок), 2–4 (ошибки), 5–8 (что происходит)
+src/core/scenes/part-b.js   сцены 9–12 (шаги), 13–15 (поворот)
+
+src/core/scenes/index.js
+
+import {s00, s02, s03, s04, s05, s06, s07, s08} from './part-a.js';
+import {s09, s10, s11, s12, s13, s14, s15} from './part-b.js';
+
+export const SCENE_RENDERERS = {s00, s02, s03, s04, s05, s06, s07, s08, s09, s10, s11, s12, s13, s14, s15};
+
+src/core/scenes/part-a.js
+
+// «Тридцать первый», серия 1: сцена 0 (крючок), 2–4 (ошибки), 5–8 (что происходит).
+import {C, FONT_HEAVY, FONT_MONO, glow} from '../theme.js';
+import {Easing, interpolate, random} from '../math.js';
+import {f2, f3} from '../html.js';
+import {bg, soundRings, svgText} from '../world.js';
+import {hero} from '../hero.js';
+import {callout, hud} from '../ui.js';
+import {FLOOR_Y, cabin, cabinLight, floorTop, panelClose, towerSection} from '../props.js';
+
+const L = (local, a, b, from = 0, to = 1, easing = Easing.outCubic) => interpolate(local, [a, b], [from, to], {easing});
+
+// 0 · Миша в кабине, на табло мигает «31», за дверью крик. Кнопка «открыть» перечёркнута.
+export function s00({local, uid}) {
+  const blink = Math.floor(local / 9) % 2 === 0 ? 1 : 0.2;
+  const scared = local >= 16;
+  const svg =
+    cabin(uid, {floor: '31', displayOn: blink, openAlert: L(local, 44, 56)}) +
+    soundRings(540, 940, local, {color: C.red, n: 3, period: 36, maxR: 420, from: 14}) +
+    hero({pose: 'stand', emotion: scared ? 'scared' : 'calm', look: scared ? 0.9 : 0, sweat: local > 60, x: 330, y: FLOOR_Y, s: 0.62, local, seed: 1}) +
+    cabinLight(1);
+  const cam =
+    callout({x: 560, y: 664, w: 440, label: 'ЗА ДВЕРЬЮ:', text: '«А-а-а!»', tailX: 70, local, delay: 16, color: 'red'}) +
+    hud({x: 470, y: 1160, color: 'red', icon: 'cross', title: '«Открыть»', sub: 'не нажимать', local, delay: 48});
+  return {svg, cam, impacts: [14]};
+}
+
+// 2 · Ошибка 1: Миша жмёт все кнопки, кабина останавливается на каждом этаже, двери открываются.
+export function s02({local, uid}) {
+  const litCount = Math.min(16, Math.floor(L(local, 8, 64, 0, 16.99, Easing.linear)));
+  const k = local - 72;
+  const stop = k >= 0 ? Math.min(3, Math.floor(k / 20)) : -1;
+  const ph = stop >= 0 ? k - stop * 20 : 99;
+  const floor = stop >= 0 ? String(30 - stop) : '31';
+  const gap = ph < 14 ? Math.sin((ph / 14) * Math.PI) * 0.26 : 0;
+  const opened = stop >= 0;
+  let svg = cabin(uid, {floor, arrow: opened ? '↓' : '', litCount, gap, corridor: 1});
+  if (gap > 0.02) svg += soundRings(540, 940, ph, {color: C.red, n: 2, period: 14, maxR: 260});
+  svg += hero({pose: 'press', emotion: opened ? 'scared' : 'focused', look: opened ? -0.6 : 1, lookY: opened ? 0 : -0.4, sweat: opened, x: 640, y: FLOOR_Y, s: 0.62, local, seed: 2});
+  svg += cabinLight(1);
+  const cam = hud({x: 40, y: 1160, color: 'red', icon: 'warn', title: 'Двери на каждом', sub: '30 · 29 · 28 · 27', local, delay: 80});
+  return {svg, cam};
+}
+
+// 3 · Ошибка 2: Миша кричит в кнопку вызова, отвечает «диспетчер», двери начинают открываться.
+export function s03({local, uid}) {
+  const talking = local >= 62 && local < 112;
+  const open = L(local, 112, 150) * 0.34;
+  let svg = cabin(uid, {floor: '31', speaker: talking ? Math.floor(local / 5) % 2 : 0, gap: open, corridor: 1});
+  if (open > 0.05) svg += soundRings(540, 940, local, {color: C.red, n: 3, period: 30, maxR: 300, from: 118});
+  svg += hero({pose: 'press', emotion: local < 62 ? 'shout' : local < 112 ? 'curious' : 'shock', look: local < 62 ? 0.8 : open > 0.05 ? -0.8 : 1, sweat: local > 112, x: 640, y: FLOOR_Y, s: 0.62, local, seed: 3});
+  svg += cabinLight(1);
+  const talk = local < 62
+    ? callout({x: 260, y: 596, w: 420, label: 'МИША:', text: '«Помогите!»', tailX: 360, local, delay: 6})
+    : callout({x: 360, y: 596, w: 680, label: 'ДИСПЕТЧЕР:', text: '«Не волнуйтесь, мы идём к вам»', tailX: 560, local, delay: 64, color: 'red'});
+  const cam = talk + hud({x: 40, y: 1160, color: 'red', icon: 'warn', title: 'Двери открываются', sub: 'этаж 31', local, delay: 120});
+  return {svg, cam};
+}
+
+// 4 · Ошибка 3: удары по люку. Разрез башни: круги звука, заражённые на трёх этажах ниже.
+export function s04({local, uid}) {
+  const T = {x: 560, w: 440, ground: 1360, fh: 70, from: 22, to: 31, shaftX: 725, sw: 110, cabinFloor: 31};
+  const dots = {30: L(local, 36, 46), 29: L(local, 76, 86), 28: L(local, 116, 126)};
+  let svg = bg('#0D1124') + towerSection(uid, {...T, dots, labels: [22, 25, 28, 31]});
+  const hx = T.shaftX + T.sw / 2;
+  const hy = floorTop(T, 31) + 4;
+  [30, 70, 110].forEach((t) => {
+    const k = local - t;
+    if (k < 0 || k >= 44) return;
+    const r = interpolate(k, [0, 26], [12, 3 * T.fh + 10], {easing: Easing.outCubic});
+    svg += `<circle cx='${f2(hx)}' cy='${f2(hy)}' r='${f2(r)}' fill='none' stroke='${C.red}' stroke-width='6' stroke-dasharray='20 12' opacity='${f3(1 - k / 44)}'/>`;
+    if (k < 18) svg += svgText(hx + 74, hy - 14, 'БАМ', {font: 'heavy', size: 40, color: '#FFFFFF', weight: 900, spacing: 0, opacity: 1 - k / 18});
+  });
+  const y31 = floorTop(T, 31);
+  const y28 = floorTop(T, 28) + T.fh;
+  svg += `<path d='M ${T.x + T.w + 18} ${f2(y31)} h 16 V ${f2(y28)} h -16' stroke='${C.red}' stroke-width='4' fill='none' opacity='${f3(L(local, 40, 52))}'/>`;
+  svg += `<rect x='-80' y='${T.ground}' width='1240' height='700' fill='#0A0C18'/>`;
+  const cam = hud({x: 30, y: 760, color: 'red', icon: 'ear', title: 'Слышно', sub: '± 3 этажа', local, delay: 36});
+  return {svg, cam};
+}
+
+// 5 · Схема башни: красные точки — заражённые на этажах, кабина зелёная. Не видят, слышат.
+export function s05({local, uid}) {
+  const T = {x: 600, w: 400, ground: 1380, fh: 24, from: 1, to: 31, shaftX: 760, sw: 80, cabinFloor: 31};
+  const dots = {};
+  for (let n = 1; n <= 30; n += 1) {
+    if (random(uid + 'f' + n) < 0.55) {
+      const t = 14 + random(uid + 't' + n) * 50;
+      dots[n] = L(local, t, t + 10);
+    }
+  }
+  let svg = bg('#0D1124') + towerSection(uid, {...T, dots, labels: [1, 5, 10, 13, 20, 25, 31]});
+  if (local >= 60) {
+    Object.keys(dots).forEach((key, i) => {
+      const n = Number(key);
+      const ph = ((local - 60 + i * 7) % 36) / 36;
+      const yy = floorTop(T, n) + T.fh / 2;
+      [0.18, 0.82].forEach((u) => {
+        svg += `<circle cx='${f2(T.x + u * T.w)}' cy='${f2(yy)}' r='${f2(8 + ph * 26)}' fill='none' stroke='${C.red}' stroke-width='2' opacity='${f3((1 - ph) * 0.5 * dots[n])}'/>`;
+      });
+    });
+  }
+  svg += svgText(T.shaftX + T.sw + 12, floorTop(T, 31) + 20, 'ТЫ', {size: 22, color: C.green, weight: 700});
+  svg += `<rect x='-80' y='${T.ground}' width='1240' height='700' fill='#0A0C18'/>`;
+  const cam =
+    hud({x: 30, y: 640, color: 'blue', icon: 'eyeoff', title: 'Не видят', sub: 'свет не важен', local, delay: 8}) +
+    hud({x: 30, y: 800, color: 'red', icon: 'ear', title: 'Слышат', sub: 'голос · шаги', local, delay: 56}) +
+    hud({x: 30, y: 960, color: 'blue', icon: 'cross', title: 'Запах', sub: 'безразличен', local, delay: 118});
+  return {svg, cam};
+}
+
+// 6 · Аварийное питание: часы 2:00 → 0:00, свет гаснет. Телефон 31 %.
+export function s06({local, uid}) {
+  const p = L(local, 6, 196, 0, 1, Easing.linear);
+  const sec = Math.ceil(120 * (1 - p) - 1e-6);
+  const txt = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+  const cx = 540;
+  const cy = 900;
+  const r = 230;
+  const circ = 2 * Math.PI * r;
+  let ticks = '';
+  for (let i = 0; i < 60; i += 1) {
+    const a = (i / 60) * Math.PI * 2;
+    const big = i % 5 === 0;
+    const r1 = r - 44;
+    const r2 = big ? r - 70 : r - 56;
+    ticks += `<line x1='${f2(cx + Math.sin(a) * r1)}' y1='${f2(cy - Math.cos(a) * r1)}' x2='${f2(cx + Math.sin(a) * r2)}' y2='${f2(cy - Math.cos(a) * r2)}' stroke='${big ? '#C9A64A' : '#5A4A3A'}' stroke-width='${big ? 5 : 3}' stroke-linecap='round'/>`;
+  }
+  const svg =
+    bg('#0B0C16') +
+    `<defs><radialGradient id='am-${uid}' cx='0.5' cy='0.47' r='0.55'><stop offset='0' stop-color='#3A2A10'/><stop offset='1' stop-color='#0B0C16' stop-opacity='0'/></radialGradient></defs>` +
+    `<rect x='-80' y='300' width='1240' height='1300' fill='url(#am-${uid})' opacity='${f3(1 - p * 0.8)}'/>` +
+    `<circle cx='${cx}' cy='${cy}' r='${r}' fill='rgba(18,12,6,0.85)' stroke='#3A2E1E' stroke-width='24'/>` +
+    `<circle cx='${cx}' cy='${cy}' r='${r}' fill='none' stroke='${C.gold}' stroke-width='24' stroke-linecap='round' stroke-dasharray='${f2(circ)}' stroke-dashoffset='${f2(circ * p)}' transform='rotate(-90 ${cx} ${cy})'/>` +
+    ticks +
+    `<rect x='-80' y='-80' width='1240' height='2080' fill='#000' opacity='${f3(L(local, 150, 204, 0, 0.55))}'/>`;
+  const cam =
+    `<div style='position:absolute;left:0;right:0;top:${cy - 64}px;text-align:center;font-family:${FONT_MONO};font-weight:700;font-size:120px;line-height:1;color:${C.gold};text-shadow:${glow(C.gold, 1)}'>${txt}</div>` +
+    `<div style='position:absolute;left:0;right:0;top:${cy + 70}px;text-align:center;font-family:${FONT_MONO};font-size:24px;letter-spacing:3px;color:${C.grey}'>АВАРИЙНОЕ ПИТАНИЕ</div>` +
+    hud({x: 300, y: 1200, color: 'gold', icon: 'target', title: 'Телефон 31 %', sub: 'заряд не вечен', local, delay: 140});
+  return {svg, cam};
+}
+
+// 7 · Воздух: кабина 2 × 2 × 2,2 м ≈ 9 м³, шахта «дышит» вверх-вниз.
+export function s07({local}) {
+  const fx0 = 330;
+  const fx1 = 690;
+  const fy0 = 800;
+  const fy1 = 1196;
+  const dx = 120;
+  const dy = -90;
+  const b = Math.sin(local / 20);
+  const up = b >= 0;
+  const ao = 0.35 + 0.65 * Math.abs(b);
+  const lvl = 0.86 + 0.06 * b;
+  const ax = 570;
+  const chev = (cy2, o) => {
+    const d = up ? -1 : 1;
+    return `<path d='M ${ax - 28} ${f2(cy2 - d * 14)} L ${ax} ${f2(cy2 + d * 14)} L ${ax + 28} ${f2(cy2 - d * 14)}' stroke='${C.cyan}' stroke-width='8' fill='none' stroke-linecap='round' stroke-linejoin='round' opacity='${f3(o)}'/>`;
+  };
+  let svg = bg('#0D1124');
+  svg += `<rect x='${fx0 + 40}' y='560' width='${fx1 - fx0 + dx - 80}' height='840' fill='#0A0C15'/>`;
+  svg += `<polygon points='${fx1},${fy0} ${fx1 + dx},${fy0 + dy} ${fx1 + dx},${fy1 + dy} ${fx1},${fy1}' fill='#262B3E'/>`;
+  svg += `<polygon points='${fx0},${fy0} ${fx1},${fy0} ${fx1 + dx},${fy0 + dy} ${fx0 + dx},${fy0 + dy}' fill='#3A4058'/>`;
+  svg += `<polygon points='520,770 600,770 630,748 550,748' fill='#262B3E' stroke='${C.metalLt}' stroke-width='3'/>`;
+  svg += `<rect x='${fx0}' y='${fy0}' width='${fx1 - fx0}' height='${fy1 - fy0}' fill='#2E3346'/>`;
+  const airH = (fy1 - fy0) * lvl;
+  svg += `<rect x='${fx0}' y='${f2(fy1 - airH)}' width='${fx1 - fx0}' height='${f2(airH)}' fill='${C.cyan}' opacity='0.22'/>`;
+  svg += `<rect x='${fx0}' y='${fy0}' width='${fx1 - fx0}' height='${fy1 - fy0}' fill='none' stroke='${C.cyan}' stroke-width='4'/>`;
+  svg += svgText((fx0 + fx1) / 2, fy1 + 50, '2 М', {size: 28, anchor: 'middle', weight: 700});
+  svg += svgText(fx0 - 20, (fy0 + fy1) / 2, '2,2 М', {size: 28, anchor: 'end', weight: 700});
+  svg += svgText(fx1 + dx / 2 + 26, fy0 + dy / 2 - 6, '2 М', {size: 28, weight: 700});
+  svg += chev(650 - b * 10, ao) + chev(616 - b * 10, ao * 0.6);
+  svg += svgText(ax + 50, 644, 'ШАХТА ДЫШИТ', {size: 24, color: C.cyan, weight: 700});
+  const cam = `<div style='position:absolute;left:0;right:60px;top:950px;text-align:center;font-family:${FONT_HEAVY};font-weight:900;font-size:92px;line-height:1;color:${C.cyan};text-shadow:${glow(C.cyan, 0.8)};white-space:nowrap'>≈ 9 М³</div>`;
+  const ui = hud({x: 170, y: 1300, color: 'red', icon: 'ear', title: 'Найдут раньше', sub: 'по звуку', local, delay: 150});
+  return {svg, cam, ui};
+}
+
+// 8 · Панель крупно: «Миша, не волнуйтесь». Имя он не называл — это запись.
+export function s08({local, uid}) {
+  const talking = local >= 10 && local < 76;
+  const P = panelClose({x: 580, y: 760, w: 420, h: 560, speaker: talking ? Math.floor(local / 5) % 2 : 0, wave: talking ? local : null});
+  const svg =
+    bg(C.metal) + `<rect x='-80' y='1300' width='1240' height='700' fill='#171A28'/>` + P.svg +
+    hero({pose: 'stand', emotion: local >= 84 ? 'shock' : 'curious', look: 1, lookY: -0.2, sweat: local > 96, x: 270, y: 1640, s: 0.92, local, seed: 8}) +
+    cabinLight(1);
+  const cam = callout({x: 440, y: 590, w: 600, label: 'ДИСПЕТЧЕР:', text: '«Миша, не волнуйтесь»', tailX: 380, local, delay: 12, color: 'red'});
+  const ui = hud({x: 440, y: 1340, color: 'red', icon: 'warn', title: 'Это запись', sub: 'повтор · 00:03', local, delay: 96});
+  return {svg, cam, ui};
+}
+
+src/core/scenes/part-b.js
+
+// «Тридцать первый», серия 1: сцены 9–12 (шаги) и 13–15 (поворот). Строку «ШАГ N» рисует движок.
+import {C, FONT_HEAVY, FONT_MONO} from '../theme.js';
+import {Easing, interpolate, spring} from '../math.js';
+import {f2, f3} from '../html.js';
+import {bg, soundRings, svgText} from '../world.js';
+import {M, hero} from '../hero.js';
+import {bigClock, hud, phone, slantBanner} from '../ui.js';
+import {FLOOR_Y, backpack, cabin, cabinLight, panelClose, pointingHand, sneakerFront, sockFront} from '../props.js';
+
+const L = (local, a, b, from = 0, to = 1, easing = Easing.outCubic) => interpolate(local, [a, b], [from, to], {easing});
+
+// 9 · Шаг 1: на телефоне выключаются экран, звук, вибрация; экран гаснет, телефон уходит в рюкзак.
+export function s09({local}) {
+  const offAt = [30, 58, 86];
+  const rows = ['ЭКРАН', 'ЗВУК', 'ВИБРАЦИЯ'];
+  const black = L(local, 116, 128);
+  const slide = L(local, 146, 192, 0, 1, Easing.inOutCubic);
+  const toggles = rows.map((name, i) => {
+    const off = L(local, offAt[i], offAt[i] + 8);
+    const track = off > 0.5 ? '#3A4058' : C.green;
+    return `<div style='display:flex;align-items:center;justify-content:space-between;padding:22px 26px;border-bottom:2px solid #1F2A44'><span style='font-family:${FONT_HEAVY};font-weight:800;font-size:34px;color:#FFFFFF'>${name}</span><span style='position:relative;display:block;width:96px;height:52px;border-radius:26px;background:${track}'><span style='position:absolute;top:6px;left:${f2(50 - off * 44)}px;width:40px;height:40px;border-radius:20px;background:#FFFFFF'></span></span></div>`;
+  }).join('');
+  const screen =
+    `<div style='position:absolute;left:30px;right:30px;top:60px;display:flex;justify-content:space-between;font-family:${FONT_MONO};font-weight:700;font-size:22px;color:#C9CCD6'><span>ТЕЛЕФОН</span><span style='color:${C.gold}'>31 %</span></div>` +
+    `<div style='position:absolute;left:0;right:0;top:120px'>${toggles}</div>` +
+    `<div style='position:absolute;left:0;right:0;top:470px;text-align:center;font-family:${FONT_MONO};font-weight:700;font-size:24px;letter-spacing:2px;color:${C.green};opacity:${f3(L(local, 96, 106))}'>ТИХИЙ РЕЖИМ</div>` +
+    `<div style='position:absolute;left:0;top:0;right:0;bottom:0;background:#000;opacity:${f3(black)}'></div>`;
+  const ph = phone({x: 500, y: 600, w: 420, h: 620, tilt: 3, screen, glowColor: black > 0.5 ? null : C.blue});
+  const svg = bg(C.metal) + `<rect x='-80' y='1300' width='1240' height='700' fill='#171A28'/>` + backpack(220, 1130, 0.9) + cabinLight(1);
+  const cam =
+    `<div style='position:absolute;left:0;top:0;width:1080px;height:1920px;transform:translate(${f2(-slide * 490)}px, ${f2(slide * 90)}px) scale(${f3(1 - slide * 0.55)});transform-origin:710px 910px;opacity:${f3(1 - L(local, 176, 196))}'>${ph}</div>` +
+    hud({x: 30, y: 610, color: 'red', icon: 'warn', title: 'Вибрация', sub: 'её слышно', local, delay: 80}) +
+    hud({x: 30, y: 760, color: 'blue', icon: 'info', title: 'Экран', sub: 'не страшен', local, delay: 100});
+  return {svg, cam};
+}
+
+// 10 · Шаг 2: кроссовки слетают, остаются жёлтые носки. Подошва стучит, носок — нет.
+export function s10({local}) {
+  const fy = 1214;
+  let svg = bg('#1A1D2C') + `<rect x='-80' y='${fy}' width='1240' height='800' fill='#171A28'/><rect x='-80' y='${fy - 6}' width='1240' height='10' fill='#2A2F45'/>`;
+  [[390, -1, 40], [690, 1, 62]].forEach(([cx, dir, t0]) => {
+    const k = L(local, t0, t0 + 22, 0, 1, Easing.inQuad);
+    svg += `<ellipse cx='${cx}' cy='${fy + 4}' rx='96' ry='12' fill='#000' opacity='0.35'/>`;
+    svg += `<rect x='${cx - 42}' y='1120' width='84' height='60' rx='16' fill='${M.sock}'/>`;
+    svg += `<rect x='${cx - 62}' y='520' width='124' height='620' rx='30' fill='${M.pants}'/><rect x='${cx - 66}' y='1090' width='132' height='44' rx='14' fill='${M.pantsSh}'/>`;
+    svg += sockFront(cx, fy - 36, 1.05);
+    if (k < 0.999) svg += sneakerFront(cx + dir * k * 320, fy - 44 - Math.sin(k * Math.PI) * 60, 1, dir * k * 30, 1 - k * 0.6);
+  });
+  [[6, 390], [18, 690], [30, 390]].forEach(([t, cx]) => {
+    const k = local - t;
+    if (k < 0 || k >= 14) return;
+    svg += `<ellipse cx='${cx}' cy='${fy}' rx='${f2(80 + k * 8)}' ry='${f2(10 + k)}' fill='none' stroke='${C.red}' stroke-width='4' opacity='${f3(1 - k / 14)}'/>`;
+    svg += svgText(cx, fy - 120, 'ТУК', {font: 'heavy', size: 40, color: C.red, weight: 900, anchor: 'middle', spacing: 0, opacity: 1 - k / 14});
+  });
+  svg += svgText(540, fy - 180, 'ТИШИНА', {size: 30, color: C.green, weight: 700, anchor: 'middle', opacity: L(local, 96, 108)});
+  const cam =
+    hud({x: 30, y: 600, color: 'red', icon: 'cross', title: 'Подошва', sub: 'стучит', local, delay: 4}) +
+    hud({x: 600, y: 600, color: 'green', icon: 'check', title: 'Носок', sub: 'тихо', local, delay: 92});
+  return {svg, cam};
+}
+
+// 11 · Шаг 3: Миша садится на пол в угол, спиной к стене, и не ходит.
+export function s11({local, uid}) {
+  const mixT = L(local, 10, 64, 0, 1, Easing.inOutCubic);
+  const svg =
+    cabin(uid, {floor: '31', sideWall: true}) +
+    hero({pose: 'stand', pose2: 'sitFloor', mixT, emotion: mixT < 0.5 ? 'focused' : 'calm', look: 0.3, x: 250, y: FLOOR_Y, s: 0.62, local, seed: 11, shoes: false}) +
+    cabinLight(1);
+  const cam =
+    hud({x: 470, y: 690, color: 'green', icon: 'check', title: 'Спиной к стене', sub: 'в углу', local, delay: 66}) +
+    hud({x: 470, y: 840, color: 'red', icon: 'cross', title: 'Не ходи', sub: 'шаги = вибрация', local, delay: 100});
+  return {svg, cam};
+}
+
+// 12 · Шаг 4: палец на «стоп», кнопка вызова перечёркнута.
+export function s12({local}) {
+  const P = panelClose({x: 290, y: 600, w: 420, h: 660, callRing: L(local, 26, 36), stopRing: local >= 50 ? 0.6 + 0.4 * Math.sin(local / 5) : 0});
+  const [sx, sy] = P.pos.stop;
+  const s = 0.85;
+  const enter = L(local, 12, 46);
+  const svg = bg(C.metal) + P.svg + pointingHand(sx, sy + 112 * s + (1 - enter) * 520, s) + cabinLight(1);
+  const cam =
+    hud({x: 730, y: 900, color: 'red', icon: 'cross', title: 'Вызов', sub: 'не трогать', local, delay: 28}) +
+    hud({x: 730, y: 1040, color: 'green', icon: 'check', title: 'Стоп', sub: 'палец здесь', local, delay: 50});
+  return {svg, cam};
+}
+
+// 13 · Поворот: из шахты стучат ··· ——— ··· (SOS). Это человек.
+export function s13({local, uid}) {
+  const seq = [['d', 12], ['d', 20], ['d', 28], ['l', 46], ['l', 62], ['l', 78], ['d', 96], ['d', 104], ['d', 112]];
+  const y = 930;
+  let x = 170;
+  const items = seq.map(([t, at], i) => {
+    const w = t === 'd' ? 36 : 84;
+    const cx = x + w / 2;
+    x += w + (i === 2 || i === 5 ? 64 : 24);
+    return {t, at, cx};
+  });
+  let svg = cabin(uid, {floor: '31'}) + cabinLight(0.3);
+  svg += `<rect x='120' y='800' width='840' height='280' rx='30' fill='rgba(7,8,15,0.9)' stroke='${C.gold}' stroke-opacity='0.4' stroke-width='3'/>`;
+  items.forEach((it) => {
+    if (local < it.at) {
+      svg += it.t === 'd'
+        ? `<circle cx='${f2(it.cx)}' cy='${y}' r='18' fill='#2A2F45'/>`
+        : `<rect x='${f2(it.cx - 42)}' y='${y - 12}' width='84' height='24' rx='12' fill='#2A2F45'/>`;
+      return;
+    }
+    const a = Math.min(1.2, spring(local - it.at, {damping: 12, stiffness: 220}));
+    const sc = 0.6 + 0.4 * a;
+    const shape = it.t === 'd' ? `<circle r='18' fill='${C.gold}'/>` : `<rect x='-42' y='-12' width='84' height='24' rx='12' fill='${C.gold}'/>`;
+    svg += `<g transform='translate(${f2(it.cx)} ${y}) scale(${f3(sc)})'>${shape}</g>`;
+    const k = local - it.at;
+    if (k < 14) svg += svgText(it.cx, y - 70, 'ТУК', {font: 'heavy', size: 30, color: '#FFFFFF', weight: 900, anchor: 'middle', spacing: 0, opacity: 1 - k / 14});
+  });
+  [[0, 2, 30], [3, 5, 80], [6, 8, 114]].forEach(([a, b, t], gi) => {
+    const cx = (items[a].cx + items[b].cx) / 2;
+    svg += svgText(cx, y + 100, gi === 1 ? 'O' : 'S', {font: 'heavy', size: 64, color: C.gold, weight: 900, anchor: 'middle', spacing: 0, opacity: L(local, t, t + 8)});
+  });
+  const cam = hud({x: 300, y: 1140, color: 'gold', icon: 'target', title: 'SOS', sub: 'сигнал бедствия', local, delay: 118});
+  return {svg, cam};
+}
+
+// 14 · Миша прикладывается к стене, слушает стук. Табло «31» гаснет.
+export function s14({local, uid}) {
+  const svg =
+    cabin(uid, {floor: '31', displayOn: 1 - L(local, 60, 84)}) +
+    soundRings(1120, 960, local, {color: C.gold, n: 3, period: 40, maxR: 320, opacity: 0.6}) +
+    hero({pose: 'point', emotion: 'focused', look: 1, lookY: 0.1, x: 760, y: FLOOR_Y, s: 0.62, local, seed: 14, shoes: false}) +
+    cabinLight(0.85);
+  const cam = hud({x: 40, y: 660, color: 'gold', icon: 'target', title: 'Стучит, не кричит', sub: 'знает правило', local, delay: 56});
+  return {svg, cam};
+}
+
+// 15 · Рывок, кабина сама едет вверх: 32, 33, 34… Но в башне 31 этаж.
+export function s15({local, uid}) {
+  const f = local < 30 ? 31 : Math.min(36, 32 + Math.floor((local - 30) / 25));
+  const flicker = local >= 20 && local < 28 ? (Math.floor(local / 2) % 2 ? 0.35 : 0.8) : 1;
+  const arrowOn = Math.floor(local / 8) % 2 === 0;
+  const svg =
+    cabin(uid, {floor: String(f), arrow: local >= 30 && arrowOn ? '↑' : ''}) +
+    hero({pose: 'stand', pose2: 'cover', mixT: L(local, 36, 52), emotion: local < 20 ? 'focused' : 'shock', look: 0.2, lookY: -0.6, sweat: local > 40, x: 400, y: FLOOR_Y, s: 0.58, local, seed: 15, shoes: false}) +
+    cabinLight(flicker);
+  const cam = bigClock({x: 290, y: 600, w: 500, text: String(f), color: f > 31 ? 'red' : 'gold', label: f > 31 ? 'этаж · вверх' : 'этаж', local, delay: 24, size: 120});
+  const ui = slantBanner({title: '32 этажа нет', sub: 'башня кончается на 31-м', local, delay: 72, y: 1010});
+  return {svg, cam, ui};
+}
+
+Что проверить после запуска
+
+Внизу превью: «Проверка сценария: ок» (90 с, 200 слов, темп каждой реплики 2,4–2,7 слова/с).
+
+Кадры для сверки: 60 (крючок), 430 (диспетчер), 560 (люк), 1200 (запись), 1760 (носки), 2600 (вверх) и оба стиль-листа.
+
+Пропорции Миши, руки и глаза крупно (сцена 8, кадр 1200; сцена 12, кадр 1950).
